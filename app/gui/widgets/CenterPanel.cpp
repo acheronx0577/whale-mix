@@ -1,0 +1,142 @@
+#include "CenterPanel.h"
+#include "Theme.h"
+#include "Fonts.h"
+#include "Eyebrow.h"
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPainter>
+
+namespace whalemix::gui {
+
+CenterPanel::CenterPanel(QWidget* parent) : QWidget(parent) {
+    auto* main_layout = new QVBoxLayout(this);
+    main_layout->setContentsMargins(24, 24, 24, 24);
+    main_layout->setSpacing(0);
+
+    // 1. Head row (40px, bottom-aligned)
+    auto* head_widget = new QWidget(this);
+    head_widget->setFixedHeight(40);
+    auto* head_layout = new QHBoxLayout(head_widget);
+    head_layout->setContentsMargins(0, 0, 0, 0);
+    head_layout->setSpacing(0);
+
+    auto* title_label = new QLabel("Score windows", head_widget);
+    title_label->setFont(fonts::heading(28));
+    title_label->setStyleSheet("color: #0b1640;");
+    head_layout->addWidget(title_label, 0, Qt::AlignBottom | Qt::AlignLeft);
+
+    head_layout->addStretch(1);
+
+    auto* meta_label = new QLabel("69 PICTURES FROM 6 SOUNDS", head_widget);
+    meta_label->setFont(fonts::mono(11, 450, 0.1));
+    meta_label->setStyleSheet("color: #56658f; padding-bottom: 8px; text-transform: uppercase;");
+    head_layout->addWidget(meta_label, 0, Qt::AlignBottom | Qt::AlignRight);
+
+    main_layout->addWidget(head_widget);
+
+    // 12px gap
+    main_layout->addSpacing(12);
+
+    // 2. Filter row (34px)
+    auto* filter_widget = new QWidget(this);
+    filter_widget->setFixedHeight(36);
+    auto* filter_layout = new QHBoxLayout(filter_widget);
+    filter_layout->setContentsMargins(0, 0, 0, 0);
+    filter_layout->setSpacing(8);
+
+    auto* filter_eyebrow = new Eyebrow("FILTER BY PILE", false, filter_widget);
+    filter_layout->addWidget(filter_eyebrow, 0, Qt::AlignVCenter);
+
+    pill_all_ = new PillButton("All", 0, filter_widget);
+    pill_call_ = new PillButton("Call", 0, filter_widget);
+    pill_not_call_ = new PillButton("Not-call", 0, filter_widget);
+    pill_review_ = new PillButton("Review", 0, filter_widget);
+
+    pill_all_->set_active(true);
+
+    filter_layout->addWidget(pill_all_, 0, Qt::AlignVCenter);
+    filter_layout->addWidget(pill_call_, 0, Qt::AlignVCenter);
+    filter_layout->addWidget(pill_not_call_, 0, Qt::AlignVCenter);
+    filter_layout->addWidget(pill_review_, 0, Qt::AlignVCenter);
+
+    filter_layout->addStretch(1);
+
+    search_box_ = new SearchBox(filter_widget);
+    filter_layout->addWidget(search_box_, 0, Qt::AlignVCenter);
+
+    main_layout->addWidget(filter_widget);
+
+    // 17px gap
+    main_layout->addSpacing(17);
+
+    // 3. Table
+    table_ = new ScoreTable(this);
+    table_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    main_layout->addWidget(table_, 1);
+
+    // Connect pill clicks
+    connect(pill_all_, &PillButton::clicked, this, [this]() { set_active_pile("all"); });
+    connect(pill_call_, &PillButton::clicked, this, [this]() { set_active_pile("call"); });
+    connect(pill_not_call_, &PillButton::clicked, this, [this]() { set_active_pile("not-call"); });
+    connect(pill_review_, &PillButton::clicked, this, [this]() { set_active_pile("review"); });
+
+    // Connect search
+    connect(search_box_, &SearchBox::text_changed, this, [this](const QString& q) {
+        table_->set_filter(active_pile_, q);
+    });
+
+    // Connect selection
+    connect(table_, &ScoreTable::selection_changed, this, &CenterPanel::selection_changed);
+}
+
+void CenterPanel::set_active_pile(const QString& pile) {
+    if (active_pile_ != pile) {
+        active_pile_ = pile;
+        update_pill_active_states();
+        table_->set_filter(active_pile_, search_box_->text());
+        emit pile_filter_changed(active_pile_);
+    }
+}
+
+void CenterPanel::update_pill_active_states() {
+    pill_all_->set_active(active_pile_ == "all");
+    pill_call_->set_active(active_pile_ == "call");
+    pill_not_call_->set_active(active_pile_ == "not-call");
+    pill_review_->set_active(active_pile_ == "review");
+}
+
+void CenterPanel::set_rows(const std::vector<Row>& rows, bool has_file, int num_sounds) {
+    num_rows_ = static_cast<int>(rows.size());
+    num_sounds_ = num_sounds;
+
+    int call = 0;
+    int not_call = 0;
+    int review = 0;
+
+    for (const auto& r : rows) {
+        if (r.mix_label == "call") call++;
+        else if (r.mix_label == "not-call") not_call++;
+        else if (r.mix_label == "review") review++;
+    }
+
+    pill_all_->set_count(num_rows_);
+    pill_call_->set_count(call);
+    pill_not_call_->set_count(not_call);
+    pill_review_->set_count(review);
+
+    table_->set_rows(rows, has_file);
+    update();
+}
+
+void CenterPanel::focus_search() {
+    search_box_->focus_input();
+}
+
+void CenterPanel::paintEvent(QPaintEvent* /*event*/) {
+    QPainter p(this);
+    // Background paper
+    p.fillRect(rect(), theme::kPaper);
+}
+
+} // namespace whalemix::gui

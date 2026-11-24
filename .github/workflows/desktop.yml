@@ -1,39 +1,242 @@
 name: desktop
 
 on:
+  push:
+    paths:
+      - 'app/**'
+      - 'samples/**'
+      - 'packaging/**'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'samples/**'
+      - 'packaging/**'
+      - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            artifact: whale-mix-windows
-          - os: macos-latest
-            artifact: whale-mix-macos
-    runs-on: ${{ matrix.os }}
+  windows:
+    name: Windows (MSVC 2022)
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          modules: 'qtimageformats'
+          cache: true
+
+      - name: Configure CMake
+        run: |
+          cmake --preset windows-msvc -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+
+      - name: Build
+        run: |
+          cmake --build --preset windows-msvc-release
+
       - name: Test
-        run: cargo test --manifest-path app/Cargo.toml
-      - name: Release binary
-        run: cargo build --release --manifest-path app/Cargo.toml
-      - name: Pack Mac app
-        if: runner.os == 'macOS'
-        shell: bash
-        run: sh app/pack/mac-app.sh
-      - name: Upload Windows exe
-        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ctest --preset windows-msvc-release --output-on-failure
+
+      - name: Generate Screenshot
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          New-Item -ItemType Directory -Force screenshots
+          & build/windows-msvc/app/Release/whale-mix.exe --screenshot screenshots/shot-windows.png --open samples/blue_a_scores.csv --select sample-a-004
+
+      - name: Package Windows Zip and Installer
+        run: |
+          cmake --install build/windows-msvc --prefix dist/WhaleMix --config Release
+          windeployqt --release --no-translations dist/WhaleMix/whale-mix.exe
+          if (Test-Path dist/WhaleMix/include) { Remove-Item -Recurse -Force dist/WhaleMix/include }
+          if (Test-Path dist/WhaleMix/lib) { Remove-Item -Recurse -Force dist/WhaleMix/lib }
+          if (-not (Test-Path dist/WhaleMix/samples)) { Copy-Item -Recurse -Force samples dist/WhaleMix/samples }
+          Compress-Archive -Path dist/WhaleMix -DestinationPath dist/WhaleMix-0.2.0-windows-x64.zip
+          iscc /DAppVersion=0.2.0 packaging/whale-mix.iss
+
+      - name: Upload Windows Zip
         uses: actions/upload-artifact@v4
         with:
-          name: whale-mix-windows
-          path: app/target/release/whale-mix.exe
-      - name: Upload Mac app
-        if: runner.os == 'macOS'
+          name: whale-mix-windows-zip
+          path: dist/WhaleMix-0.2.0-windows-x64.zip
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload Windows Setup
         uses: actions/upload-artifact@v4
         with:
-          name: whale-mix-macos
-          path: app/target/release/Whale Mix.app
+          name: whale-mix-windows-setup
+          path: dist/WhaleMix-0.2.0-windows-x64-setup.exe
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload Screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-windows
+          path: screenshots/
+          retention-days: 7
+
+  macos:
+    name: macOS (Universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'mac'
+          target: 'desktop'
+          arch: 'clang_64'
+          modules: 'qtimageformats'
+          cache: true
+
+      - name: Patch Qt AGL framework bug on macOS
+        run: |
+          QT_DIR="${{ env.Qt6_DIR }}"
+          if [ -d "$QT_DIR/../../.." ]; then
+            QT_ROOT="$(cd "$QT_DIR/../../.." && pwd)"
+          else
+            QT_ROOT="$QT_DIR"
+          fi
+          echo "Patching Qt AGL under $QT_ROOT"
+          find "$QT_ROOT" -type f \( -name "*.cmake" -o -name "*.prl" \) -exec sed -i '' 's/-framework AGL//g' {} + 2>/dev/null || true
+          find "$QT_ROOT" -type f -name "FindWrapOpenGL.cmake" -exec sed -i '' 's/find_library(WrapOpenGL_AGL NAMES AGL)/set(WrapOpenGL_AGL "")/g' {} + 2>/dev/null || true
+          find "$QT_ROOT" -type f -name "FindWrapOpenGL.cmake" -exec sed -i '' 's/set(__opengl_agl_fw_path "-framework AGL")/set(__opengl_agl_fw_path "")/g' {} + 2>/dev/null || true
+          mkdir -p /tmp/dummy_frameworks/AGL.framework
+          clang -arch arm64 -arch x86_64 -shared -o /tmp/dummy_frameworks/AGL.framework/AGL -x c /dev/null -install_name @rpath/AGL.framework/AGL 2>/dev/null || true
+
+      - name: Configure CMake
+        run: |
+          cmake --preset macos -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" -DCMAKE_FRAMEWORK_PATH="/tmp/dummy_frameworks" -DCMAKE_EXE_LINKER_FLAGS="-F/tmp/dummy_frameworks"
+
+      - name: Build
+        run: |
+          cmake --build --preset macos-release
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ctest --preset macos-release --output-on-failure
+
+      - name: Generate Screenshot
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          mkdir -p screenshots
+          "build/macos/app/Whale Mix.app/Contents/MacOS/Whale Mix" --screenshot screenshots/shot-macos.png --open samples/blue_a_scores.csv --select sample-a-004
+
+      - name: Package DMG
+        run: |
+          chmod +x packaging/package-mac.sh
+          ./packaging/package-mac.sh build/macos dist 0.2.0
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: whale-mix-macos-dmg
+          path: dist/WhaleMix-0.2.0-macos.dmg
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload Screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-macos
+          path: screenshots/
+          retention-days: 7
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev libfreetype6-dev ninja-build
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'linux'
+          target: 'desktop'
+          arch: 'linux_gcc_64'
+          modules: 'qtimageformats'
+          cache: true
+
+      - name: Configure CMake
+        run: |
+          cmake --preset linux -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+
+      - name: Build
+        run: |
+          cmake --build --preset linux-release
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ctest --preset linux-release --output-on-failure
+
+      - name: Generate Screenshot
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          mkdir -p screenshots
+          build/linux/app/whale-mix --screenshot screenshots/shot-linux.png --open samples/blue_a_scores.csv --select sample-a-004
+
+      - name: Upload Screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-linux
+          path: screenshots/
+          retention-days: 7
+
+  verify-packages:
+    name: Verify Required Packages
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows Zip
+        uses: actions/download-artifact@v4
+        with:
+          name: whale-mix-windows-zip
+          path: dist/
+
+      - name: Download Windows Setup
+        uses: actions/download-artifact@v4
+        with:
+          name: whale-mix-windows-setup
+          path: dist/
+
+      - name: Download macOS DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: whale-mix-macos-dmg
+          path: dist/
+
+      - name: Verify All 3 Packages Exist and Non-Empty
+        run: |
+          ls -la dist/
+          test -s dist/WhaleMix-0.2.0-windows-x64.zip
+          test -s dist/WhaleMix-0.2.0-windows-x64-setup.exe
+          test -s dist/WhaleMix-0.2.0-macos.dmg
+          echo "All three required packages verified!"

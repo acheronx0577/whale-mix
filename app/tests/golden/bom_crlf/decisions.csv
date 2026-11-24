@@ -1,0 +1,2 @@
+sample_id,candidate_id,picture_start_s,picture_end_s,bat,baf,sound_label,laya_choice,laya_probability,mix_label,mix_reason,image_file
+sample-a,sample-a-004,,,0.507124,0.492876,call,,,call,blue-a,

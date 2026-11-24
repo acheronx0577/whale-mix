@@ -1,0 +1,8 @@
+sample_id,candidate_id,picture_start_s,picture_end_s,bat,baf,sound_label,laya_choice,laya_probability,mix_label,mix_reason,image_file
+s1,s1-001,1.0,7.144,0.500000,0.500000,not-call,,,not-call,blue-a,"img, one.jpg"
+s1,s1-002,2.0,8.144,0.900000,0.100000,call,not-call,0.950000,review,disagree,
+s2,s2-001,3,9,0.200000,0.800000,not-call,call,0.590000,not-call,blue-a,
+s2,s2-002,3,9,0.200000,0.800000,not-call,call,0.600000,review,disagree,
+s2,s2-003,3,9,0.200000,0.800000,not-call,not-call,0.600000,not-call,agree,
+s2,,,,0.700000,0.300000,call,call,0.000000,call,blue-a,x.jpg
+,,,,0.100000,0.900000,not-call,call,0.000000,not-call,blue-a,

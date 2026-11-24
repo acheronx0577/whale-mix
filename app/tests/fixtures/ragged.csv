@@ -1,0 +1,3 @@
+sample_id,candidate_id,status,bat_score,baf_score,centered_window_start_s,centered_window_end_s,image_file
+sample-a,sample-a-004,scored,0.507124,0.492876,92.416,98.56,a.jpg
+sample-b,sample-b-001,scored,0.03,0.97

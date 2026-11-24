@@ -2,4 +2,7 @@ out/
 __pycache__/
 *.pyc
 .venv/
-app/target/
+build/
+dist/
+*.zip
+.vercel

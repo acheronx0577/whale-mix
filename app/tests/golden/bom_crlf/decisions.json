@@ -1,0 +1,16 @@
+[
+  {
+    "baf": "0.492876",
+    "bat": "0.507124",
+    "candidate_id": "sample-a-004",
+    "image_file": "",
+    "laya_choice": "",
+    "laya_probability": "",
+    "mix_label": "call",
+    "mix_reason": "blue-a",
+    "picture_end_s": "",
+    "picture_start_s": "",
+    "sample_id": "sample-a",
+    "sound_label": "call"
+  }
+]

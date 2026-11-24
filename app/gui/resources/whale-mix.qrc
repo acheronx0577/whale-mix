@@ -1,0 +1,21 @@
+<RCC>
+    <qresource prefix="/fonts">
+        <file alias="GoogleSansFlex-Regular.ttf">../../assets/fonts/GoogleSansFlex-Regular.ttf</file>
+        <file alias="GoogleSansFlex-Medium.ttf">../../assets/fonts/GoogleSansFlex-Medium.ttf</file>
+        <file alias="GoogleSansFlex-SemiBold.ttf">../../assets/fonts/GoogleSansFlex-SemiBold.ttf</file>
+        <file alias="GoogleSansFlex-Bold.ttf">../../assets/fonts/GoogleSansFlex-Bold.ttf</file>
+        <file alias="GoogleSansCode-Regular.ttf">../../assets/fonts/GoogleSansCode-Regular.ttf</file>
+        <file alias="GoogleSansCode-Medium.ttf">../../assets/fonts/GoogleSansCode-Medium.ttf</file>
+        <file alias="GoogleSansCode-SemiBold.ttf">../../assets/fonts/GoogleSansCode-SemiBold.ttf</file>
+    </qresource>
+    <qresource prefix="/icons">
+        <file alias="folder-open.svg">../../assets/icons/ui/folder-open.svg</file>
+        <file alias="download.svg">../../assets/icons/ui/download.svg</file>
+        <file alias="search.svg">../../assets/icons/ui/search.svg</file>
+        <file alias="whale-logo-native-53.png">../../assets/icons/whale-logo-native-53.png</file>
+        <file alias="whale-mix-512.png">../../assets/icons/whale-mix-512.png</file>
+    </qresource>
+    <qresource prefix="/">
+        <file alias="dither.png">../../assets/dither.png</file>
+    </qresource>
+</RCC>
