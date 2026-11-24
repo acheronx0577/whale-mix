@@ -22,6 +22,14 @@ if ($windeploy) {
 if (Test-Path "$DistDir/include") { Remove-Item -Recurse -Force "$DistDir/include" }
 if (Test-Path "$DistDir/lib") { Remove-Item -Recurse -Force "$DistDir/lib" }
 
+# Copy GCC runtimes if compiled with MinGW / GCC
+$gccBin = "C:\msys64\ucrt64\bin"
+if (Test-Path "$gccBin\libgcc_s_seh-1.dll") {
+    Copy-Item "$gccBin\libgcc_s_seh-1.dll" "$DistDir\" -Force
+    Copy-Item "$gccBin\libstdc++-6.dll" "$DistDir\" -Force
+    Copy-Item "$gccBin\libwinpthread-1.dll" "$DistDir\" -Force
+}
+
 # Ensure samples exist in dist
 if (-not (Test-Path "$DistDir/samples")) {
     Copy-Item -Recurse -Force "samples" "$DistDir/samples"
