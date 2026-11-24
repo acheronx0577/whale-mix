@@ -131,19 +131,29 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         }
     });
 
-    // TopBar triggers — open source picker modal
-    connect(top_bar_, &gui::TopBar::open_requested, this, [this]() {
-        auto* dlg = new gui::SourcePickerDialog(gui::SourceKind::Csv, this);
+        // TopBar triggers — open source picker modal
+    auto open_source_picker = [this](gui::SourceKind initial_kind) {
+        auto* dlg = new gui::SourcePickerDialog(initial_kind, this);
         connect(dlg, &gui::SourcePickerDialog::csv_file_chosen, this, [this](const QString& path) {
             open_file(path);
         });
+        connect(dlg, &gui::SourcePickerDialog::audio_files_chosen, this, [this](const QStringList& paths) {
+            if (!paths.isEmpty()) {
+                QFileInfo fi(paths.first());
+                status_bar_->set_status(QString("Loaded raw audio %1 (%2 files) — generate spectrogram or score")
+                    .arg(fi.fileName())
+                    .arg(paths.size()));
+            }
+        });
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->exec();
+    };
+
+    connect(top_bar_, &gui::TopBar::open_requested, this, [open_source_picker]() {
+        open_source_picker(gui::SourceKind::Csv);
     });
-    connect(top_bar_, &gui::TopBar::import_audio_requested, this, [this]() {
-        auto* dlg = new gui::SourcePickerDialog(gui::SourceKind::Audio, this);
-        dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->exec();
+    connect(top_bar_, &gui::TopBar::import_audio_requested, this, [open_source_picker]() {
+        open_source_picker(gui::SourceKind::Audio);
     });
     connect(top_bar_, &gui::TopBar::export_requested, this, &MainWindow::export_report);
 

@@ -1,4 +1,4 @@
-#include "TopBar.h"
+﻿#include "TopBar.h"
 #include "Theme.h"
 #include "Fonts.h"
 #include "Kbd.h"
@@ -111,11 +111,15 @@ void TopBar::mousePressEvent(QMouseEvent* event) {
             control_pressed_ = 2;
             update();
         } else if (open_button_rect().contains(event->pos())) {
-            open_pressed_ = true;
+            open_pressed_ = false;
             update();
+            emit open_requested();
+            return;
         } else if (export_button_rect().contains(event->pos())) {
-            export_pressed_ = true;
+            export_pressed_ = false;
             update();
+            emit export_requested();
+            return;
         } else {
             // Drag the window via system native move
             if (window() && window()->windowHandle()) {
@@ -131,7 +135,7 @@ void TopBar::mouseReleaseEvent(QMouseEvent* event) {
             open_pressed_ = false;
             update();
             if (open_button_rect().contains(event->pos())) {
-                show_source_menu();
+                emit open_requested();
             }
             return;
         }
@@ -182,40 +186,6 @@ void TopBar::mouseDoubleClickEvent(QMouseEvent* event) {
             }
         }
     }
-}
-
-void TopBar::show_source_menu() {
-    QMenu menu(this);
-    menu.setStyleSheet(
-        "QMenu {"
-        "  background-color: #ffffff;"
-        "  border: 1px solid #e1e7f5;"
-        "  border-radius: 8px;"
-        "  padding: 6px;"
-        "  font-family: 'DM Sans', -apple-system, sans-serif;"
-        "  font-size: 13px;"
-        "}"
-        "QMenu::item {"
-        "  padding: 8px 18px 8px 12px;"
-        "  border-radius: 6px;"
-        "  color: #0b1528;"
-        "}"
-        "QMenu::item:selected {"
-        "  background-color: #f1f4fc;"
-        "  color: #1e3fd8;"
-        "}"
-    );
-
-    auto* open_csv = menu.addAction("Open score CSV…");
-    open_csv->setShortcut(QKeySequence("Ctrl+O"));
-    connect(open_csv, &QAction::triggered, this, &TopBar::open_requested);
-
-    auto* import_audio = menu.addAction("Import raw audio (.wav · .flac)…");
-    connect(import_audio, &QAction::triggered, this, &TopBar::import_audio_requested);
-
-    QRect r = open_button_rect();
-    QPoint pt = mapToGlobal(QPoint(r.x(), r.bottom() + 4));
-    menu.exec(pt);
 }
 
 void TopBar::paintEvent(QPaintEvent* /*event*/) {

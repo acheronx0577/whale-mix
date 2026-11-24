@@ -36,8 +36,6 @@ protected:
     void leaveEvent(QEvent* event) override;
 
 private:
-    void show_source_menu();
-
 private:
     QString file_name_;
     bool open_hovered_ = false;
