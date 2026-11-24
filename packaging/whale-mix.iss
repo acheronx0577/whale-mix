@@ -11,6 +11,7 @@ DefaultDirName={localappdata}\Programs\WhaleMix
 DisableProgramGroupPage=yes
 DefaultGroupName=Whale Mix
 PrivilegesRequired=lowest
+RedirectionGuard=no
 OutputDir=..\dist
 OutputBaseFilename=WhaleMix-{#AppVersion}-windows-x64-setup
 SetupIconFile=..\app\assets\icons\whale-mix.ico
@@ -44,7 +45,7 @@ Root: HKCU; Subkey: "Software\Classes\WhaleMix.Csv\DefaultIcon"; ValueType: stri
 Root: HKCU; Subkey: "Software\Classes\WhaleMix.Csv\shell\open\command"; ValueType: string; ValueName: """{app}\whale-mix.exe"" ""%1"""; Flags: uninsdeletekey
 
 [Run]
-Filename: "{app}\whale-mix.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,Whale Mix}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\whale-mix.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,Whale Mix}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\*"

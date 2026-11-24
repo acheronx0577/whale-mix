@@ -1,4 +1,5 @@
-#include "MainWindow.h"
+﻿#include "MainWindow.h"
+#include "widgets/SourcePickerDialog.h"
 #include "Theme.h"
 #include "Fonts.h"
 #include "whalemix/table.h"
@@ -130,24 +131,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         }
     });
 
-    // TopBar triggers
+    // TopBar triggers — open source picker modal
     connect(top_bar_, &gui::TopBar::open_requested, this, [this]() {
-        QSettings settings;
-        QString last_dir = settings.value("last_open_dir", QDir::homePath()).toString();
-        QString file = QFileDialog::getOpenFileName(this, "Open Score CSV", last_dir, "Blue A score CSV (*.csv)");
-        if (!file.isEmpty()) {
-            settings.setValue("last_open_dir", QFileInfo(file).absolutePath());
-            open_file(file);
-        }
+        auto* dlg = new gui::SourcePickerDialog(gui::SourceKind::Csv, this);
+        connect(dlg, &gui::SourcePickerDialog::csv_file_chosen, this, [this](const QString& path) {
+            open_file(path);
+        });
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->exec();
     });
     connect(top_bar_, &gui::TopBar::import_audio_requested, this, [this]() {
-        QSettings settings;
-        QString last_dir = settings.value("last_audio_dir", QDir::homePath()).toString();
-        QString file = QFileDialog::getOpenFileName(this, "Import Raw Audio", last_dir, "Audio Files (*.wav *.flac *.ogg)");
-        if (!file.isEmpty()) {
-            settings.setValue("last_audio_dir", QFileInfo(file).absolutePath());
-            status_bar_->set_status(QString("Loaded raw audio %1 — generate spectrogram or score").arg(QFileInfo(file).fileName()));
-        }
+        auto* dlg = new gui::SourcePickerDialog(gui::SourceKind::Audio, this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->exec();
     });
     connect(top_bar_, &gui::TopBar::export_requested, this, &MainWindow::export_report);
 
