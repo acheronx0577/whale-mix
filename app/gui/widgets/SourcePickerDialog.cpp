@@ -1,4 +1,6 @@
 #include "SourcePickerDialog.h"
+#include "Theme.h"
+#include "Fonts.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -14,19 +16,68 @@
 #include <QMimeData>
 #include <QKeyEvent>
 #include <QMouseEvent>
-#include <QFont>
 #include <QStyle>
-#include <QSizePolicy>
+#include <QPainter>
+#include <QSvgRenderer>
+#include <QPixmap>
+#include <QIcon>
 
 namespace whalemix::gui {
+
+namespace {
+
+constexpr const char* kDropSvg =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"36\" height=\"36\" viewBox=\"0 0 24 24\" fill=\"none\" "
+    "stroke=\"#1e3fd8\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M12 3v10\"/>"
+    "<path d=\"m8 9 4 4 4-4\"/>"
+    "<path d=\"M5 16v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3\"/>"
+    "</svg>";
+
+constexpr const char* kFilesSvg =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" "
+    "stroke=\"#0b1640\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\"/>"
+    "<path d=\"M14 3v5h5\"/>"
+    "</svg>";
+
+constexpr const char* kFolderSvg =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" "
+    "stroke=\"#0b1640\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/>"
+    "</svg>";
+
+constexpr const char* kCloseSvg =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" "
+    "stroke=\"#56658f\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<line x1=\"18\" y1=\"6\" x2=\"6\" y2=\"18\"/>"
+    "<line x1=\"6\" y1=\"6\" x2=\"18\" y2=\"18\"/>"
+    "</svg>";
+
+QPixmap render_svg(const char* svg_xml, int w, int h) {
+    QPixmap pix(w * 2, h * 2);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QByteArray bytes(svg_xml);
+    QSvgRenderer renderer(bytes);
+    renderer.render(&p);
+    pix.setDevicePixelRatio(2.0);
+    return pix;
+}
+
+} // namespace
 
 SourcePickerDialog::SourcePickerDialog(SourceKind kind, QWidget* parent)
     : QDialog(parent), kind_(kind)
 {
     setModal(true);
+    // Frameless window: zero native OS title bar, zero double close buttons
     setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground, false);
     setAcceptDrops(true);
     setFixedWidth(560);
+
     setup_ui();
     set_kind(kind);
 
@@ -39,18 +90,9 @@ SourcePickerDialog::SourcePickerDialog(SourceKind kind, QWidget* parent)
 void SourcePickerDialog::setup_ui() {
     setStyleSheet(R"(
         QDialog {
-            background: #ffffff;
-            border: 1px solid #d0dbe9;
+            background-color: #ffffff;
+            border: 1px solid #d9e4f7;
             border-radius: 12px;
-        }
-        QLabel#title {
-            font-size: 20px;
-            font-weight: 700;
-            color: #0b1528;
-        }
-        QLabel#subtitle {
-            font-size: 13px;
-            color: #6b7a99;
         }
         QPushButton#tabBtnActive {
             background: #1e3fd8;
@@ -72,57 +114,50 @@ void SourcePickerDialog::setup_ui() {
         }
         QPushButton#tabBtnInactive:hover {
             background: #e3ebfa;
-            color: #0b1528;
+            color: #0b1640;
         }
         QFrame#dropZone {
-            background: #f0f4ff;
-            border: 1.5px dashed #93aeed;
+            background: #f6f8ff;
+            border: 1.5px dashed #1e3fd8;
             border-radius: 10px;
         }
-        QLabel#dropTitle {
-            font-size: 16px;
-            font-weight: 600;
-            color: #0b1528;
-        }
-        QLabel#dropHint {
-            font-size: 12px;
-            color: #6b7a99;
-            font-family: monospace;
-        }
-        QPushButton#chooseBtn {
+        QPushButton#actionBtn {
             background: #ffffff;
-            color: #0b1528;
-            border: 1px solid #c8d4f0;
+            color: #0b1640;
+            border: 1px solid #d9e4f7;
             border-radius: 8px;
-            padding: 8px 18px;
+            padding: 0 16px;
+            height: 42px;
+            min-height: 42px;
             font-size: 13px;
             font-weight: 500;
         }
-        QPushButton#chooseBtn:hover {
-            background: #f0f4ff;
-            border-color: #93aeed;
+        QPushButton#actionBtn:hover {
+            background: #f6f8ff;
+            border-color: #1e3fd8;
         }
-        QPushButton#chooseBtn:pressed {
-            background: #e1e7f5;
+        QPushButton#actionBtn:pressed {
+            background: #eaf2ff;
         }
         QPushButton#closeBtn {
             background: transparent;
             border: none;
-            color: #6b7a99;
-            font-size: 20px;
-            font-weight: 300;
-            padding: 2px 6px;
+            border-radius: 6px;
+            width: 32px;
+            height: 32px;
+            min-width: 32px;
+            min-height: 32px;
         }
         QPushButton#closeBtn:hover {
-            color: #0b1528;
+            background: #f1f4fc;
         }
     )");
 
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(28, 24, 28, 24);
-    root->setSpacing(0);
+    root->setContentsMargins(24, 24, 24, 24);
+    root->setSpacing(16);
 
-    // Header row (title + close button)
+    // ── Header (Title, Subtitle, and single sleek × Close Button) ───────────
     {
         auto* header = new QHBoxLayout();
         header->setSpacing(8);
@@ -131,34 +166,39 @@ void SourcePickerDialog::setup_ui() {
         title_col->setSpacing(3);
 
         title_lbl_ = new QLabel("Open score CSV", this);
-        title_lbl_->setObjectName("title");
+        title_lbl_->setFont(fonts::heading(20, 600));
+        title_lbl_->setStyleSheet("color: #0b1640; margin: 0; padding: 0;");
         title_col->addWidget(title_lbl_);
 
         subtitle_lbl_ = new QLabel("Blue A score tables \xc2\xb7 accepts .csv", this);
-        subtitle_lbl_->setObjectName("subtitle");
+        subtitle_lbl_->setFont(fonts::body(13, 400));
+        subtitle_lbl_->setStyleSheet("color: #56658f; margin: 0; padding: 0;");
         title_col->addWidget(subtitle_lbl_);
 
         header->addLayout(title_col);
         header->addStretch();
 
-        auto* close_btn = new QPushButton("\xc3\x97", this); // ×
+        // Exact sleek vector close icon
+        auto* close_btn = new QPushButton(this);
         close_btn->setObjectName("closeBtn");
-        close_btn->setFixedSize(28, 28);
+        close_btn->setIcon(QIcon(render_svg(kCloseSvg, 14, 14)));
+        close_btn->setIconSize(QSize(14, 14));
+        close_btn->setCursor(Qt::PointingHandCursor);
         connect(close_btn, &QPushButton::clicked, this, &QDialog::reject);
         header->addWidget(close_btn, 0, Qt::AlignTop);
 
         root->addLayout(header);
     }
 
-    root->addSpacing(14);
-
-    // Segmented tabs to switch between CSV and Raw Audio
+    // ── Mode Switcher Tabs ──────────────────────────────────────────────────
     {
         auto* tabs_row = new QHBoxLayout();
         tabs_row->setSpacing(8);
 
         tab_csv_btn_ = new QPushButton("Score CSV", this);
         tab_csv_btn_->setObjectName("tabBtnActive");
+        tab_csv_btn_->setFont(fonts::sans(12, 600));
+        tab_csv_btn_->setCursor(Qt::PointingHandCursor);
         connect(tab_csv_btn_, &QPushButton::clicked, this, [this]() {
             set_kind(SourceKind::Csv);
         });
@@ -166,6 +206,8 @@ void SourcePickerDialog::setup_ui() {
 
         tab_audio_btn_ = new QPushButton("Raw Audio (.wav \xc2\xb7 .flac)", this);
         tab_audio_btn_->setObjectName("tabBtnInactive");
+        tab_audio_btn_->setFont(fonts::sans(12, 500));
+        tab_audio_btn_->setCursor(Qt::PointingHandCursor);
         connect(tab_audio_btn_, &QPushButton::clicked, this, [this]() {
             set_kind(SourceKind::Audio);
         });
@@ -175,64 +217,76 @@ void SourcePickerDialog::setup_ui() {
         root->addLayout(tabs_row);
     }
 
-    root->addSpacing(14);
-
-    // Drop zone
+    // ── Drop Zone (min-height 220, exact matching SVG icon and fonts) ────────
     {
         drop_zone_frame_ = new QFrame(this);
         drop_zone_frame_->setObjectName("dropZone");
-        drop_zone_frame_->setMinimumHeight(180);
+        drop_zone_frame_->setMinimumHeight(200);
         drop_zone_frame_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
         auto* dz_layout = new QVBoxLayout(drop_zone_frame_);
-        dz_layout->setContentsMargins(24, 28, 24, 28);
+        dz_layout->setContentsMargins(20, 24, 20, 24);
         dz_layout->setSpacing(8);
         dz_layout->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
 
-        // Download / arrow down icon
-        drop_icon_label_ = new QLabel("\xE2\xAC\x87", drop_zone_frame_); // ⬇
-        {
-            QFont f = drop_icon_label_->font();
-            f.setPixelSize(32);
-            drop_icon_label_->setFont(f);
-        }
-        drop_icon_label_->setStyleSheet("color: #1e3fd8;");
+        // Vector SVG download arrow matching web demo
+        drop_icon_label_ = new QLabel(drop_zone_frame_);
+        drop_icon_label_->setAlignment(Qt::AlignHCenter);
+        drop_icon_label_->setPixmap(render_svg(kDropSvg, 36, 36));
         dz_layout->addWidget(drop_icon_label_, 0, Qt::AlignHCenter);
 
-        // Requested text: "Drop files here"
+        // Clean text: "Drop files here"
         drop_title_label_ = new QLabel("Drop files here", drop_zone_frame_);
-        drop_title_label_->setObjectName("dropTitle");
+        drop_title_label_->setFont(fonts::sans(18, 600));
+        drop_title_label_->setStyleSheet("color: #0b1640;");
         drop_title_label_->setAlignment(Qt::AlignHCenter);
         dz_layout->addWidget(drop_title_label_, 0, Qt::AlignHCenter);
 
         drop_hint_label_ = new QLabel("Or choose files or a folder. Accepts .csv.", drop_zone_frame_);
-        drop_hint_label_->setObjectName("dropHint");
+        drop_hint_label_->setFont(fonts::mono(12, 450));
+        drop_hint_label_->setStyleSheet("color: #56658f;");
         drop_hint_label_->setAlignment(Qt::AlignHCenter);
         dz_layout->addWidget(drop_hint_label_, 0, Qt::AlignHCenter);
 
         root->addWidget(drop_zone_frame_);
     }
 
-    root->addSpacing(16);
-
-    // Bottom action buttons: Choose files and Choose folder
+    // ── Action Buttons (Right-aligned, height 42px, matching vector icons) ───
     {
         auto* btn_row = new QHBoxLayout();
-        btn_row->setSpacing(10);
+        btn_row->setSpacing(8);
         btn_row->addStretch();
 
-        auto* files_btn = new QPushButton("\xf0\x9f\x93\x84 Choose files", this); // 📄
-        files_btn->setObjectName("chooseBtn");
+        auto* files_btn = new QPushButton("  Choose files", this);
+        files_btn->setObjectName("actionBtn");
+        files_btn->setIcon(QIcon(render_svg(kFilesSvg, 16, 16)));
+        files_btn->setIconSize(QSize(16, 16));
+        files_btn->setFont(fonts::sans(13, 500));
+        files_btn->setCursor(Qt::PointingHandCursor);
         connect(files_btn, &QPushButton::clicked, this, &SourcePickerDialog::choose_files);
         btn_row->addWidget(files_btn);
 
-        auto* folder_btn = new QPushButton("\xf0\x9f\x93\x81 Choose folder", this); // 📁
-        folder_btn->setObjectName("chooseBtn");
+        auto* folder_btn = new QPushButton("  Choose folder", this);
+        folder_btn->setObjectName("actionBtn");
+        folder_btn->setIcon(QIcon(render_svg(kFolderSvg, 16, 16)));
+        folder_btn->setIconSize(QSize(16, 16));
+        folder_btn->setFont(fonts::sans(13, 500));
+        folder_btn->setCursor(Qt::PointingHandCursor);
         connect(folder_btn, &QPushButton::clicked, this, &SourcePickerDialog::choose_folder);
         btn_row->addWidget(folder_btn);
 
         root->addLayout(btn_row);
     }
+}
+
+void SourcePickerDialog::paintEvent(QPaintEvent* event) {
+    QDialog::paintEvent(event);
+    // Draw clean 1px border around the entire card
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(theme::kLine, 1.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 12.0, 12.0);
 }
 
 void SourcePickerDialog::set_kind(SourceKind kind) {
@@ -333,7 +387,7 @@ void SourcePickerDialog::ingest_paths(const QStringList& paths) {
         emit audio_files_chosen(audio_files);
     }
 
-    // Auto-close dialog immediately
+    // Automatically close dialog immediately upon selection
     accept();
 }
 

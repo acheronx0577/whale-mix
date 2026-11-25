@@ -1,4 +1,5 @@
 #pragma once
+
 #include <QDialog>
 #include <QString>
 #include <QStringList>
@@ -27,6 +28,7 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void paintEvent(QPaintEvent* event) override;
 
 private:
     void setup_ui();
