@@ -16,8 +16,9 @@ from whalemix_training.config import optional_path, require_path
 from whalemix_training.datalock import SetupRequired, load_locked_data
 from whalemix_training.dataset import WindowLoader
 from whalemix_training.device import DeviceError, DeviceInfo, move_batch, resolve_device
+from whalemix_training.feature_cache import FeatureCache
 from whalemix_training.hashing import canonical_hash
-from whalemix_training.io_utils import atomic_write_json, atomic_write_jsonl, read_jsonl
+from whalemix_training.io_utils import assert_outside_root, atomic_write_json, atomic_write_jsonl, read_jsonl
 from whalemix_training.labels import LabelMap, default_label_map
 from whalemix_training.losses import masked_bce
 from whalemix_training.model import build_model, describe
@@ -267,9 +268,13 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
     if transition is not None:
         transitions.append(transition)
     budget = SessionBudget.from_config(training)
-    loader = WindowLoader(
-        require_path(cfg, "recordings_root"), prep["catalog"], prep["windows"], prep["spec"], label_map
-    )
+    root = require_path(cfg, "recordings_root")
+    cache_dir = optional_path(cfg, "feature_cache_dir")
+    cache = None
+    if cache_dir is not None:
+        assert_outside_root(cache_dir, root)
+        cache = FeatureCache(cache_dir, prep["spec"])  # CacheError is a SetupRequired
+    loader = WindowLoader(root, prep["catalog"], prep["windows"], prep["spec"], label_map, cache=cache)
     lineage_parent = (
         resume["metadata"]["parent_checkpoint"]
         if resume is not None
@@ -374,6 +379,7 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         scaler=scaler,
     )
     plan["session"] = result
+    plan["input"] = {"feature_cache": None if cache is None else cache.to_json()}
     plan["global_update"] = start_update + result["optimizer_updates"]
     plan["weights_written"] = result["optimizer_updates"] > 0
     if isinstance(source, ReplayMixer):

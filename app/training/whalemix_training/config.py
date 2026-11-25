@@ -15,6 +15,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "WHALEMIX_ANNOTATIONS_CSV": ("paths", "annotations_csv"),
     "WHALEMIX_OUTPUT_DIR": ("paths", "output_dir"),
     "WHALEMIX_REPLAY_MANIFEST": ("paths", "replay_manifest"),
+    "WHALEMIX_FEATURE_CACHE_DIR": ("paths", "feature_cache_dir"),
 }
 
 DEFAULTS: dict[str, Any] = {
@@ -25,6 +26,8 @@ DEFAULTS: dict[str, Any] = {
         "annotations_csv": None,
         "output_dir": None,
         "replay_manifest": None,
+        # Optional private feature cache (off by default); never inside the recording root or Git.
+        "feature_cache_dir": None,
     },
     "inventory": {"extensions": [".wav", ".flac"], "max_files": None},
     "split": {

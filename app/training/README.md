@@ -65,6 +65,12 @@ checkpoint and bundle. The Rust engine implements the same contract (parity test
 Paths come only from the config file or `WHALEMIX_RECORDINGS_ROOT`, `WHALEMIX_METADATA_CSV`,
 `WHALEMIX_ANNOTATIONS_CSV` and `WHALEMIX_OUTPUT_DIR`. Outputs inside the recording root are refused.
 
+`paths.feature_cache_dir` (or `WHALEMIX_FEATURE_CACHE_DIR`) turns on a private feature cache for
+training. It is off by default. Each window is stored exactly as live preprocessing produces it, keyed by
+the source SHA-256, channel, window start and preprocessing hash. Damaged or mismatched entries are
+rejected and recomputed, and a source that changed since inventory stops the run. Sampling, resume and
+weights are identical with and without the cache.
+
 Exit codes: `0` success, `1` a check or gate failed, `2` invalid configuration or input.
 
 ## Checks
