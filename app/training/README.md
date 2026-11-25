@@ -70,6 +70,9 @@ training. It is off by default. Each window is stored exactly as live preprocess
 the source SHA-256, channel, window start and preprocessing hash. Damaged or mismatched entries are
 rejected and recomputed, and a source that changed since inventory stops the run. Sampling, resume and
 weights are identical with and without the cache.
+`training.loader_workers` (default 0, at most 32) reads the windows of each micro-batch on that many
+threads. Results keep the requested order, and the setting can change between sessions without breaking
+an exact resume. On the RTX 3070 laptop, 4 threads were the useful maximum.
 
 Exit codes: `0` success, `1` a check or gate failed, `2` invalid configuration or input.
 

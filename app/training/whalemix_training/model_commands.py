@@ -128,6 +128,7 @@ RESUME_EXCLUDED_TRAINING_KEYS = (
     "device",
     "cuda_index",
     "max_windows",
+    "loader_workers",
 )
 
 
@@ -274,7 +275,18 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
     if cache_dir is not None:
         assert_outside_root(cache_dir, root)
         cache = FeatureCache(cache_dir, prep["spec"])  # CacheError is a SetupRequired
-    loader = WindowLoader(root, prep["catalog"], prep["windows"], prep["spec"], label_map, cache=cache)
+    try:
+        loader = WindowLoader(
+            root,
+            prep["catalog"],
+            prep["windows"],
+            prep["spec"],
+            label_map,
+            cache=cache,
+            workers=int(training.get("loader_workers", 0)),
+        )
+    except ValueError as exc:
+        raise SetupRequired(str(exc)) from exc
     lineage_parent = (
         resume["metadata"]["parent_checkpoint"]
         if resume is not None
@@ -365,21 +377,27 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
             payload["scaler"] = scaler.state_dict()
         ckpt.save_checkpoint(ckpt_dir / "latest.pt", payload)
 
-    result = run_session(
-        model,
-        optimizer,
-        source,
-        loader,
-        budget,
-        int(training["micro_batch"]),
-        on_checkpoint,
-        device=info,
-        start_update=start_update,
-        on_update=on_update,
-        scaler=scaler,
-    )
+    try:
+        result = run_session(
+            model,
+            optimizer,
+            source,
+            loader,
+            budget,
+            int(training["micro_batch"]),
+            on_checkpoint,
+            device=info,
+            start_update=start_update,
+            on_update=on_update,
+            scaler=scaler,
+        )
+    finally:
+        loader.close()
     plan["session"] = result
-    plan["input"] = {"feature_cache": None if cache is None else cache.to_json()}
+    plan["input"] = {
+        "feature_cache": None if cache is None else cache.to_json(),
+        "loader_workers": loader.workers,
+    }
     plan["global_update"] = start_update + result["optimizer_updates"]
     plan["weights_written"] = result["optimizer_updates"] > 0
     if isinstance(source, ReplayMixer):
