@@ -13,10 +13,11 @@ Matching rule (v1, set before any comparison):
 
 from __future__ import annotations
 
-import random
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
+
+import numpy as np
 
 MATCH_RULE_VERSION = "event-match-v1"
 
@@ -169,10 +170,11 @@ def grouped_recall_ci(result: dict[str, Any], truth: list[dict[str, Any]], n_boo
         found[str(e["recording_id"])][0] += int(id(e) in matched_ids)
         found[str(e["recording_id"])][1] += 1
     groups = sorted(found)
-    rng = random.Random(seed)
+    # Seeded, reproducible resampling for a confidence interval; not used for anything security-related.
+    rng = np.random.default_rng(seed)
     stats = []
     for _ in range(n_boot):
-        pick = [found[groups[rng.randrange(len(groups))]] for _ in groups]
+        pick = [found[groups[int(i)]] for i in rng.integers(0, len(groups), size=len(groups))]
         total = sum(g[1] for g in pick)
         stats.append(sum(g[0] for g in pick) / total if total else 0.0)
     stats.sort()

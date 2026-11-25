@@ -70,16 +70,27 @@ def code_revision(repo_dir: Path) -> dict[str, str]:
 
 
 def rng_states() -> dict[str, Any]:
+    """RNG states in plain containers and tensors, so checkpoints load with `weights_only=True`."""
+    kind, keys, pos, has_gauss, cached = np.random.get_state()
+    version, internal, gauss = random.getstate()
     return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
+        "python": [version, list(internal), gauss],
+        "numpy": [
+            kind,
+            torch.from_numpy(np.asarray(keys, dtype=np.int64)),
+            int(pos),
+            int(has_gauss),
+            float(cached),
+        ],
         "torch": torch.get_rng_state(),
     }
 
 
 def restore_rng_states(states: dict[str, Any]) -> None:
-    random.setstate(states["python"])
-    np.random.set_state(states["numpy"])
+    version, internal, gauss = states["python"]
+    random.setstate((version, tuple(internal), gauss))
+    kind, keys, pos, has_gauss, cached = states["numpy"]
+    np.random.set_state((kind, keys.numpy().astype(np.uint32), pos, has_gauss, cached))
     torch.set_rng_state(states["torch"])
 
 
@@ -124,7 +135,7 @@ def load_checkpoint(path: Path, expect: dict[str, str] | None = None) -> dict[st
         if not candidate.exists():
             continue
         try:
-            payload = torch.load(candidate, map_location="cpu", weights_only=False)
+            payload = torch.load(candidate, map_location="cpu", weights_only=True)
         except (OSError, RuntimeError, EOFError, ValueError, pickle.UnpicklingError) as exc:
             last_error = exc
             continue

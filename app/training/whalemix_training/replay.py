@@ -8,9 +8,10 @@ reservoir so one abundant condition cannot displace old years or rare classes.
 from __future__ import annotations
 
 import hashlib
-import random
 from dataclasses import dataclass, field
 from typing import Any
+
+import numpy as np
 
 from whalemix_training.hashing import canonical_hash
 from whalemix_training.labels import PRESENT
@@ -34,10 +35,14 @@ class StratifiedReplay:
     seed: int
     members: dict[str, list[str]] = field(default_factory=dict)
     seen: dict[str, int] = field(default_factory=dict)
-    _rng: random.Random = field(init=False, repr=False)
+    # Seeded reservoir sampling for reproducible resume; not used for anything security-related.
+    _rng: np.random.Generator = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._rng = random.Random(self.seed)
+        self._rng = np.random.default_rng(self.seed)
+
+    def _below(self, n: int) -> int:
+        return int(self._rng.integers(0, n))
 
     def __len__(self) -> int:
         return sum(len(v) for v in self.members.values())
@@ -59,30 +64,29 @@ class StratifiedReplay:
             bucket.append(example["example_id"])
             admitted = True
         else:
-            slot = self._rng.randrange(self.seen[key])
+            slot = self._below(self.seen[key])
             if slot < self.per_stratum_cap:
                 bucket[slot] = example["example_id"]
                 admitted = True
         while len(self) > self.capacity:
             largest = max(sorted(self.members), key=lambda k: len(self.members[k]))
-            self.members[largest].pop(self._rng.randrange(len(self.members[largest])))
+            self.members[largest].pop(self._below(len(self.members[largest])))
         return admitted
 
     def sample(self, n: int) -> list[str]:
         pool = [eid for key in sorted(self.members) for eid in self.members[key]]
         if not pool or n <= 0:
             return []
-        return [pool[self._rng.randrange(len(pool))] for _ in range(n)]
+        return [pool[int(i)] for i in self._rng.integers(0, len(pool), size=n)]
 
     def state_dict(self) -> dict[str, Any]:
-        version, internal, gauss = self._rng.getstate()
         return {
             "capacity": self.capacity,
             "per_stratum_cap": self.per_stratum_cap,
             "seed": self.seed,
             "members": {k: list(v) for k, v in sorted(self.members.items())},
             "seen": dict(sorted(self.seen.items())),
-            "rng_state": [version, list(internal), gauss],
+            "rng_state": self._rng.bit_generator.state,
         }
 
     @classmethod
@@ -90,8 +94,7 @@ class StratifiedReplay:
         replay = cls(state["capacity"], state["per_stratum_cap"], state["seed"])
         replay.members = {k: list(v) for k, v in state["members"].items()}
         replay.seen = dict(state["seen"])
-        version, internal, gauss = state["rng_state"]
-        replay._rng.setstate((version, tuple(internal), gauss))
+        replay._rng.bit_generator.state = state["rng_state"]
         return replay
 
     def manifest_hash(self) -> str:
@@ -122,10 +125,10 @@ class DeterministicSampler:
         return hashlib.sha256("\n".join(self.example_ids).encode()).hexdigest()
 
     def order(self) -> list[str]:
-        rng = random.Random(f"{self.seed}:{self.epoch}")
-        ids = list(self.example_ids)
-        rng.shuffle(ids)
-        return ids
+        # Deterministic per-epoch order (reproducible resume), derived from the seed and epoch.
+        seed = int.from_bytes(hashlib.sha256(f"{self.seed}:{self.epoch}".encode()).digest()[:8], "little")
+        perm = np.random.default_rng(seed).permutation(len(self.example_ids))
+        return [self.example_ids[int(i)] for i in perm]
 
     def peek(self, n: int) -> list[str]:
         return self.order()[self.cursor : self.cursor + n]
