@@ -34,6 +34,11 @@ Exact versions verified on the build box are in `requirements-lock.txt`.
 | `quantize` | export | Returns `SETUP_REQUIRED` until real calibration windows and a selected checkpoint exist |
 | `benchmark` | export | Session load, warm batch-8 latency and Python preprocessing speed, labelled `fixture` |
 
+`scripts/reproduce-acoustic-v1.py --config <cfg>` runs these stages in order: inventory, validate-labels,
+split, train, then optional finetune (`--parent`), evaluate (`--eval-set --predictions [--select]`) and
+export (`--export-checkpoint`). It stops at the first non-zero exit and appends each stage to
+`<output_dir>/reproduce-ledger.jsonl`. `--dry-run` prints the plan.
+
 Gates are deterministic: `PASS_ELIGIBLE`, `FAIL`, `INCONCLUSIVE`, `SETUP_REQUIRED`. Only `PASS_ELIGIBLE`
 moves `selection/selected.json` (atomic); every attempt is appended to `improvement-ledger.jsonl`.
 The Laya 0.4.6 adapter (`laya --questions --batch --batch-size --json --device cpu --model`) is advisory

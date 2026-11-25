@@ -329,3 +329,21 @@ def test_cli_evaluate_export_quantize_benchmark(tmp_path, capsys):
     )
     bench = json.loads((out / "benchmark.json").read_text(encoding="utf-8"))
     assert bench["measurement_kind"] == "fixture" and bench["windows_per_s"] > 0
+
+
+def test_reproduce_script_plans_stages_and_stops_at_first_failure(corpus: dict[str, Path]) -> None:
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "reproduce-acoustic-v1.py"
+    spec = importlib.util.spec_from_file_location("reproduce", script)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    cfg = str(corpus["config"])
+    assert mod.main(["--config", cfg, "--dry-run"]) == 0
+    # No annotations file exists yet, so validate-labels must fail and nothing after it may run.
+    code = mod.main(["--config", cfg])
+    assert code != 0
+    entries = [json.loads(x) for x in (corpus["out"] / "reproduce-ledger.jsonl").read_text().splitlines()]
+    assert [e["stage"] for e in entries] == ["inventory", "validate-labels"]
+    assert entries[0]["exit_code"] == 0 and entries[1]["exit_code"] == code
