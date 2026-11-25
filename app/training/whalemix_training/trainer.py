@@ -51,7 +51,9 @@ class SessionBudget:
         )
 
     def updates_allowed(self, done: int) -> int:
-        return max(0, min(self.max_updates, self.session_max_updates) - done)
+        """Updates this session may run after `done` global updates: the per-session cap applies to the
+        remaining global budget, so resumed sessions keep going until `max_updates` is reached."""
+        return max(0, min(self.max_updates - done, self.session_max_updates))
 
 
 def build_optimizer(model: torch.nn.Module, training: dict[str, Any]) -> torch.optim.Optimizer:
@@ -74,6 +76,7 @@ def run_session(
     clock: Callable[[], float] = time.monotonic,
     device: DeviceInfo | None = None,
     start_update: int = 0,
+    on_update: Callable[[int, list[str]], None] | None = None,
 ) -> dict[str, Any]:
     """Run up to the remaining update budget. `on_checkpoint(reason, global_update)` is called only at
     completed, finite updates, so a non-finite loss stops the session and leaves the last good checkpoint
@@ -102,8 +105,10 @@ def run_session(
             break
         optimizer.zero_grad(set_to_none=True)
         finite = True
+        update_ids: list[str] = []
         for _ in range(budget.accumulation_steps):
             ids = sampler.draw(micro_batch)
+            update_ids.extend(ids)
             x, y, mask = move_batch(load_batch(ids), info.device)
             with autocast(info):
                 logits = model(x)
@@ -128,6 +133,8 @@ def run_session(
             optimizer.step()
         updates += 1
         since_ckpt += 1
+        if on_update is not None:
+            on_update(start_update + updates, update_ids)
         if (
             since_ckpt >= budget.checkpoint_every_updates
             or clock() - last_ckpt_time >= budget.checkpoint_every_seconds

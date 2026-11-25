@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -287,6 +288,15 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
 
     ckpt_dir = prep["out"] / "checkpoints"
     identity = resume_identity(cfg, stage)
+    sample_log = ckpt_dir / f"{stage}-sample-log.jsonl"
+    _trim_sample_log(sample_log, start_update)
+
+    def on_update(update: int, ids: list[str]) -> None:
+        # Audit trail of the example IDs behind every completed update; resumed runs append to it.
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        with sample_log.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"global_update": update, "ids": ids}) + "\n")
+
     root_init = "random" if parent is None else parent["metadata"].get("initialization", "random")
 
     def on_checkpoint(reason: str, updates: int) -> None:
@@ -314,6 +324,7 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         on_checkpoint,
         device=info,
         start_update=start_update,
+        on_update=on_update,
     )
     plan["session"] = result
     plan["global_update"] = start_update + result["optimizer_updates"]
@@ -331,6 +342,18 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         }
     )
     return 0
+
+
+def _trim_sample_log(path: Path, keep_through: int) -> None:
+    """Drop log entries past the checkpoint being resumed (updates after it were lost with the process)."""
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept = [x for x in lines if x and json.loads(x)["global_update"] <= keep_through]
+    if keep_through == 0:
+        kept = []
+    if len(kept) != len(lines):
+        path.write_text("".join(x + "\n" for x in kept), encoding="utf-8")
 
 
 def _write_next_replay(prep: dict[str, Any], mixer: ReplayMixer, new_ids: list[str]) -> None:
