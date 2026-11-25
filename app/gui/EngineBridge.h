@@ -15,7 +15,15 @@
 #include <QString>
 #include <QStringList>
 
+#include "whalemix/row.h"
+
 namespace whalemix {
+
+// Converts one committed engine result row (results.partial.jsonl) into a score-table row.
+// `bat` carries the Blue A score (empty when the recording cannot be assessed for Blue A); the
+// highest whale score names the sound. Rows from an untrained fixture bundle say so in mix_reason,
+// so fixture output can never look like a model decision.
+Row row_from_engine_json(const QJsonObject& row);
 
 // Splits worker stdout into JSON objects. Lines longer than max_line_bytes are discarded (and
 // counted) rather than buffered without bound; non-JSON lines are counted and ignored.

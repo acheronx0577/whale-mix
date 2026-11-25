@@ -8,6 +8,8 @@
 #include <QDataStream>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -149,10 +151,43 @@ TEST(EngineBridgeTest, FixtureInferenceStreamsRowsAndKeepsUiResponsive) {
     EXPECT_EQ(finished.first().at(0).toString(), "completed");
     EXPECT_TRUE(rows_before_finish);
     EXPECT_EQ(bridge->committed_rows(), 6 * 59);
+    // Engine results populate the score table, labelled as fixture output.
+    ASSERT_EQ(window.state()->rows().size(), static_cast<size_t>(6 * 59));
+    EXPECT_NE(window.state()->rows().front().mix_reason.find("fixture model"), std::string::npos);
     EXPECT_LT(max_gap, 250) << "GUI event loop stalled";
     std::cout << "[fixture] gui: first_progress_ms=" << first_progress_ms << " first_rows_ms=" << first_rows_ms
               << " total_ms=" << total_ms << " audio_s=1800 max_event_loop_gap_ms=" << max_gap << " app_peak_rss_mib=" << app_peak_rss_mib()
               << std::endl;
+}
+
+TEST(EngineBridgeTest, EngineRowsConvertToScoreTableRows) {
+    const QJsonObject row = QJsonDocument::fromJson(R"({
+        "event_id": "ab12", "source_id": "s1", "path": "/data/deep/site-a/clip.wav", "channel": 1,
+        "start_s": 12.5, "end_s": 37.5,
+        "scores": {"blue_a": 0.8126, "blue_b": null, "fin_20hz_pulse": 0.25},
+        "automatic_label": "call", "automatic_reason": "blue_a", "fixture": false})").object();
+    const whalemix::Row r = whalemix::row_from_engine_json(row);
+    EXPECT_EQ(r.sample_id, "clip.wav ch1");
+    EXPECT_EQ(r.candidate_id, "ab12");
+    EXPECT_EQ(r.picture_start_s, "12.500");
+    EXPECT_EQ(r.picture_end_s, "37.500");
+    EXPECT_EQ(r.bat, "0.813");
+    EXPECT_EQ(r.baf, "");
+    EXPECT_EQ(r.sound_label, "blue_a");
+    EXPECT_EQ(r.mix_label, "call");
+    EXPECT_EQ(r.auto_label, "call");
+    EXPECT_EQ(r.mix_reason, "blue_a");
+
+    QJsonObject fixture = row;
+    fixture["fixture"] = true;
+    fixture["automatic_label"] = "review";
+    fixture["automatic_reason"] = "thresholds not-applicable; scores only";
+    QJsonObject unscored = fixture;
+    unscored["scores"] = QJsonObject{{"blue_a", QJsonValue()}};
+    const whalemix::Row f = whalemix::row_from_engine_json(fixture);
+    EXPECT_EQ(f.mix_label, "review");
+    EXPECT_EQ(f.mix_reason, "fixture model (untrained): thresholds not-applicable; scores only");
+    EXPECT_EQ(whalemix::row_from_engine_json(unscored).bat, "");
 }
 
 TEST(EngineBridgeTest, CancelIsAcknowledgedAndPartialResultsKept) {

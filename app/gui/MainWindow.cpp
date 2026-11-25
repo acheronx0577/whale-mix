@@ -175,9 +175,14 @@ void MainWindow::connect_engine() {
     connect(engine_, &EngineBridge::model_unavailable, this, [this](const QString& reason) {
         status_bar_->set_status(QString("Model unavailable: %1. CSV viewing still works.").arg(reason));
     });
-    connect(engine_, &EngineBridge::run_started, this, [this](const QString&, int total) {
+    connect(engine_, &EngineBridge::run_started, this, [this](const QString& run_dir, int total) {
+        // Engine results replace the table; they are written under the run directory, not a CSV.
+        state_.set_rows({}, QDir(run_dir).filePath("out/results.partial.jsonl"));
+        top_bar_->set_file_name(QFileInfo(run_dir).fileName());
+        update_all_views();
         status_bar_->set_status(QString("Analyzing audio: 0 of %1 files").arg(total));
     });
+    connect(engine_, &EngineBridge::rows_committed, this, [this](qint64) { append_engine_rows(); });
     connect(engine_, &EngineBridge::progress, this, [this](int done, int total, qint64 windows) {
         status_bar_->set_status(QString("Analyzing audio: %1 of %2 files, %3 windows, %4 results committed")
                                     .arg(done).arg(total).arg(windows).arg(engine_->committed_rows()));
@@ -194,6 +199,19 @@ void MainWindow::connect_engine() {
             status_bar_->set_status(QString("Analysis %1; committed results kept in %2").arg(st, engine_->run_dir()));
         }
     });
+}
+
+void MainWindow::append_engine_rows() {
+    const QList<QJsonObject> fresh = engine_->take_new_rows();
+    if (fresh.isEmpty()) return;
+    const bool first = state_.rows().empty();
+    auto& rows = state_.mutable_rows();
+    rows.reserve(rows.size() + static_cast<size_t>(fresh.size()));
+    for (const QJsonObject& obj : fresh) rows.push_back(row_from_engine_json(obj));
+    if (first) {
+        state_.set_rows(std::move(rows), state_.source_path());  // picks the first call, emits signals
+    }
+    update_all_views();
 }
 
 void MainWindow::ingest_paths(const QStringList& paths) {

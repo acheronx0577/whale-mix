@@ -49,6 +49,7 @@ private:
     void update_all_views();
     void start_audio_analysis(const QStringList& audio_files, int skipped);
     void connect_engine();
+    void append_engine_rows();
 
     EngineBridge* engine_ = nullptr;
 

@@ -140,6 +140,32 @@ ModelStatus EngineBridge::model_status() const {
 
 bool EngineBridge::running() const { return process_ && process_->state() != QProcess::NotRunning; }
 
+Row row_from_engine_json(const QJsonObject& row) {
+    Row r;
+    const QString path = row.value("path").toString();
+    r.sample_id = (path.isEmpty() ? row.value("source_id").toString() : QFileInfo(path).fileName()).toStdString();
+    if (row.value("channel").toInt() > 0) r.sample_id += " ch" + std::to_string(row.value("channel").toInt());
+    r.candidate_id = row.value("event_id").toString().toStdString();
+    r.picture_start_s = QString::number(row.value("start_s").toDouble(), 'f', 3).toStdString();
+    r.picture_end_s = QString::number(row.value("end_s").toDouble(), 'f', 3).toStdString();
+    const QJsonObject scores = row.value("scores").toObject();
+    if (scores.value("blue_a").isDouble()) r.bat = QString::number(scores.value("blue_a").toDouble(), 'f', 3).toStdString();
+    QString best;
+    double best_score = -1.0;
+    for (auto it = scores.begin(); it != scores.end(); ++it) {
+        if (it.value().isDouble() && it.value().toDouble() > best_score) {
+            best_score = it.value().toDouble();
+            best = it.key();
+        }
+    }
+    r.sound_label = best.toStdString();
+    QString reason = row.value("automatic_reason").toString();
+    if (row.value("fixture").toBool()) reason = "fixture model (untrained): " + reason;
+    r.auto_label = r.mix_label = row.value("automatic_label").toString().toStdString();
+    r.auto_reason = r.mix_reason = reason.toStdString();
+    return r;
+}
+
 QList<QJsonObject> EngineBridge::take_new_rows() {
     QList<QJsonObject> rows;
     rows.swap(new_rows_);
