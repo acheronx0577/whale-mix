@@ -79,10 +79,8 @@ def pytest_runtest_makereport(item, call):
     """With WHALEMIX_REQUIRE_FIXTURE=1 (CI integration job) a skipped test fails instead of passing."""
     outcome = yield
     report = outcome.get_result()
-    if (
-        report.skipped
-        and not hasattr(report, "wasxfail")
-        and os.environ.get("WHALEMIX_REQUIRE_FIXTURE") == "1"
-    ):
+    gpu_only = item.get_closest_marker("cuda") is not None  # CI has no GPU; the skip stays visible
+    required = os.environ.get("WHALEMIX_REQUIRE_FIXTURE") == "1" and not gpu_only
+    if report.skipped and not hasattr(report, "wasxfail") and required:
         report.outcome = "failed"
         report.longrepr = f"required test was skipped: {report.longrepr}"

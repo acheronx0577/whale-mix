@@ -69,8 +69,9 @@ def code_revision(repo_dir: Path) -> dict[str, str]:
     return {"head": head, "diff_sha256": hashlib.sha256(diff).hexdigest()}
 
 
-def rng_states() -> dict[str, Any]:
-    """RNG states in plain containers and tensors, so checkpoints load with `weights_only=True`."""
+def rng_states(device: torch.device | None = None) -> dict[str, Any]:
+    """RNG states in plain containers and tensors, so checkpoints load with `weights_only=True`. On a CUDA
+    device the generator of that device is included (dropout and other on-device randomness)."""
     kind, keys, pos, has_gauss, cached = np.random.get_state()
     version, internal, gauss = random.getstate()
     return {
@@ -83,15 +84,30 @@ def rng_states() -> dict[str, Any]:
             float(cached),
         ],
         "torch": torch.get_rng_state(),
+        **(
+            {"cuda": {"index": _cuda_index(device), "state": torch.cuda.get_rng_state(_cuda_index(device))}}
+            if device is not None and device.type == "cuda"
+            else {}
+        ),
     }
 
 
-def restore_rng_states(states: dict[str, Any]) -> None:
+def _cuda_index(device: torch.device) -> int:
+    return 0 if device.index is None else int(device.index)
+
+
+def restore_rng_states(states: dict[str, Any], device: torch.device | None = None) -> None:
+    """Restore host RNGs, and the CUDA generator when the checkpoint and target are the same CUDA index."""
     version, internal, gauss = states["python"]
     random.setstate((version, tuple(internal), gauss))
     kind, keys, pos, has_gauss, cached = states["numpy"]
     np.random.set_state((kind, keys.numpy().astype(np.uint32), pos, has_gauss, cached))
     torch.set_rng_state(states["torch"])
+    saved = states.get("cuda")
+    if saved is None or device is None or device.type != "cuda":
+        return
+    if int(saved["index"]) == _cuda_index(device):
+        torch.cuda.set_rng_state(saved["state"], _cuda_index(device))
 
 
 def state_dict_sha256(state: dict[str, torch.Tensor]) -> str:

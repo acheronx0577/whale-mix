@@ -174,6 +174,24 @@ def _load_resume(
     return payload
 
 
+HARDWARE_KEYS = ("actual", "name", "capability", "precision")
+
+
+def hardware_identity(device: dict[str, Any] | None) -> dict[str, Any]:
+    return {k: (device or {}).get(k) for k in HARDWARE_KEYS}
+
+
+def resume_scaler_state(payload: dict[str, Any], precision: str, transition: bool) -> dict[str, Any] | None:
+    """fp16 resumes need the gradient-scaler state; after a recorded hardware transition a fresh scaler is
+    used instead (the transition is not bit-exact anyway)."""
+    if precision != "fp16" or transition:
+        return None
+    if "scaler" not in payload:
+        raise SetupRequired("cannot resume an fp16 run: checkpoint has no gradient scaler state")
+    state: dict[str, Any] = payload["scaler"]
+    return state
+
+
 def _replay_source(
     cfg: dict[str, Any], prep: dict[str, Any], train_ids: list[str]
 ) -> tuple[ReplayMixer, list[str]]:
@@ -219,13 +237,35 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
     else:
         source, new_ids = DeterministicSampler(train_ids, int(training["seed"])), train_ids
     start_update = 0
+    transition = None
     if resume is not None:
+        before = hardware_identity(resume["metadata"].get("device"))
+        after = hardware_identity(info.to_json())
+        if before != after:
+            if not getattr(args, "allow_hardware_transition", False):
+                raise SetupRequired(
+                    f"hardware transition {before} -> {after}: an exact resume needs the same device. Rerun "
+                    "with --allow-hardware-transition (recorded, not bit-exact) or start `finetune --parent`"
+                )
+            transition = {
+                "from": resume["metadata"].get("device"),
+                "to": info.to_json(),
+                "at_update": int(resume["metadata"]["global_update"]),
+            }
         try:
             optimizer.load_state_dict(resume["optimizer"])
             source.load_state(resume["mixer"] if stage == "finetune" else resume["sampler"])
         except (ValueError, KeyError, RuntimeError) as exc:
             raise SetupRequired(f"cannot resume: {exc}") from exc
         start_update = int(resume["metadata"]["global_update"])
+    scaler = torch.amp.GradScaler("cuda") if info.precision == "fp16" else None
+    if resume is not None and scaler is not None:
+        scaler_state = resume_scaler_state(resume, info.precision, transition is not None)
+        if scaler_state is not None:
+            scaler.load_state_dict(scaler_state)
+    transitions = list((resume or {}).get("metadata", {}).get("hardware_transitions", []))
+    if transition is not None:
+        transitions.append(transition)
     budget = SessionBudget.from_config(training)
     loader = WindowLoader(
         require_path(cfg, "recordings_root"), prep["catalog"], prep["windows"], prep["spec"], label_map
@@ -257,6 +297,8 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
             "weights_sha256": resume["metadata"]["weights_sha256"],
             "global_update": start_update,
         },
+        "exact_resume": None if resume is None else transition is None,
+        "hardware_transition": transition,
     }
     if isinstance(source, ReplayMixer):
         plan["replay"] = {
@@ -284,7 +326,7 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
     if budget.max_updates > 0 and plan["preflight"]["blocking"]:
         raise SetupRequired(f"preflight blocking: {'; '.join(plan['preflight']['blocking'])}")
     if resume is not None:
-        ckpt.restore_rng_states(resume["rng"])
+        ckpt.restore_rng_states(resume["rng"], info.device if transition is None else None)
 
     ckpt_dir = prep["out"] / "checkpoints"
     identity = resume_identity(cfg, stage)
@@ -302,16 +344,20 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
     def on_checkpoint(reason: str, updates: int) -> None:
         meta = _metadata(cfg, prep, label_map, stage, plan["parent"], source.epoch, updates, "training-state")
         meta.update({"device": plan["device"], "resume_identity": identity, "initialization": root_init})
+        if transitions:
+            meta["hardware_transitions"] = transitions
         payload = {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "sampler": (source.sampler if isinstance(source, ReplayMixer) else source).state_dict(),
-            "rng": ckpt.rng_states(),
+            "rng": ckpt.rng_states(info.device),
             "reason": reason,
             "metadata": meta,
         }
         if isinstance(source, ReplayMixer):
             payload["mixer"] = source.state_dict()
+        if scaler is not None:
+            payload["scaler"] = scaler.state_dict()
         ckpt.save_checkpoint(ckpt_dir / "latest.pt", payload)
 
     result = run_session(
@@ -325,6 +371,7 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         device=info,
         start_update=start_update,
         on_update=on_update,
+        scaler=scaler,
     )
     plan["session"] = result
     plan["global_update"] = start_update + result["optimizer_updates"]
@@ -398,6 +445,11 @@ def cmd_finetune(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
 def _resume_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--resume", type=Path, default=None, help="training-state checkpoint of this run to continue exactly"
+    )
+    parser.add_argument(
+        "--allow-hardware-transition",
+        action="store_true",
+        help="resume on a different device/precision; recorded in the plan and checkpoint, not bit-exact",
     )
 
 

@@ -40,3 +40,4 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["cuda: needs a CUDA GPU; skipped (and allowed to skip under WHALEMIX_REQUIRE_FIXTURE) elsewhere"]

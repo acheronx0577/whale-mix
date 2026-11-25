@@ -77,6 +77,7 @@ def run_session(
     device: DeviceInfo | None = None,
     start_update: int = 0,
     on_update: Callable[[int, list[str]], None] | None = None,
+    scaler: Any = None,
 ) -> dict[str, Any]:
     """Run up to the remaining update budget. `on_checkpoint(reason, global_update)` is called only at
     completed, finite updates, so a non-finite loss stops the session and leaves the last good checkpoint
@@ -91,7 +92,8 @@ def run_session(
         }
     info = device or resolve_device({})
     model.to(info.device)
-    scaler = torch.amp.GradScaler("cuda") if info.precision == "fp16" else None
+    if scaler is None and info.precision == "fp16":
+        scaler = torch.amp.GradScaler("cuda")
     model.train()
     start = last_ckpt_time = clock()
     updates = since_ckpt = 0
