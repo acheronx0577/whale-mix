@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include "AppState.h"
+#include "EngineBridge.h"
 #include "widgets/TopBar.h"
 #include "widgets/StatusBar.h"
 #include "widgets/Sidebar.h"
@@ -23,7 +24,14 @@ public:
     gui::CenterPanel* center_panel() { return center_panel_; }
     gui::DetailPanel* detail_panel() { return detail_panel_; }
 
+    EngineBridge* engine_bridge() { return engine_; }
+    // Replace the engine bridge (tests use this to point at a fixture bundle and worker).
+    void set_engine_bridge(EngineBridge* bridge);
+
     void open_file(const QString& path);
+    // Single ingestion path for drops and the source picker: CSVs open in the table, audio files
+    // and folders are discovered off the GUI thread and queued for the analysis worker.
+    void ingest_paths(const QStringList& paths);
     void export_report();
     void set_manual_label(const QString& label);
     void undo_override();
@@ -39,6 +47,10 @@ protected:
 
 private:
     void update_all_views();
+    void start_audio_analysis(const QStringList& audio_files, int skipped);
+    void connect_engine();
+
+    EngineBridge* engine_ = nullptr;
 
     AppState state_;
     gui::TopBar* top_bar_ = nullptr;
