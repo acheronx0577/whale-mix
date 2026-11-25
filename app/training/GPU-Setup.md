@@ -46,7 +46,31 @@ python -m whalemix_training train --config run.json   # with training.max_update
 The second command writes `train-plan.json` with the `device` block and the preflight counts and
 changes no weights.
 
+## Resume and hardware changes
+
+- `train/finetune --resume` restores the model, optimizer, sampler/replay state, host RNGs, the CUDA RNG
+  of the selected device and, for `fp16`, the gradient-scaler state. A same-device resume is recorded
+  as `exact_resume: true` in `<stage>-plan.json`.
+- A checkpoint from a different card, compute capability or precision is refused. Rerun with
+  `--allow-hardware-transition` to continue anyway: the plan records `hardware_transition` and
+  `exact_resume: false`, the checkpoint appends to `hardware_transitions`, and the CUDA RNG and scaler
+  restart. For a planned move such as RTX 3070 to RTX 5090, prefer `finetune --parent` from the 3070
+  checkpoint.
+- `tests/test_cuda_resume.py` has two `cuda`-marked tests (fp32 and fp16). They skip without a GPU, also
+  under `WHALEMIX_REQUIRE_FIXTURE=1`, so run them on the training host.
+
+## Verified on (2026-11-25)
+
+RTX 3070 Laptop GPU (sm_86), torch 2.15.0+cu132 in a separate virtual environment:
+
+- `tests/test_cuda_resume.py`: 7 passed. 2+2 interrupted updates vs 4 straight updates gave identical
+  weights (max abs diff 0.0) and identical sample logs in fp32 and fp16.
+- `train` with `max_updates = 0` on `cuda:0`: finite outputs and masked loss; no weights written.
+- Synthetic random-tensor steps (not training), fp32, input `[1, 257, 100]`: about 490 windows/s at
+  micro-batch 16 (0.8 GB VRAM) and 600 to 630 windows/s at 32 to 64 (1.6 to 3.2 GB). Single-process
+  window reading is about 70 windows/s, so a real run needs `loader_workers` or cached features.
+
 ## Not done yet
 
-- No GPU run has used these pins. Nothing was installed on the owner's PC.
-- Rented or local GPU host, driver version and VRAM budget are still the owner's decision.
+- No real training run. The verified labels are far too few for a grouped train/validation/test run.
+- The RTX 5090 has not been tested.
