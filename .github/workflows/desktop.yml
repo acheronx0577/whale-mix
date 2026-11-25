@@ -210,6 +210,125 @@ jobs:
           path: screenshots/
           retention-days: 7
 
+  integration:
+    name: Integration (training + engine + fixture)
+    runs-on: ubuntu-24.04
+    env:
+      # Fixture-dependent tests fail instead of skipping in this job.
+      WHALEMIX_REQUIRE_FIXTURE: '1'
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install training lock (CPU torch)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 torchvision==0.29.2
+          python -m pip install -r app/training/requirements-lock.txt
+
+      - name: Python lint and types
+        working-directory: app/training
+        run: |
+          ruff check .
+          ruff format --check .
+          mypy whalemix_training
+
+      - name: Python tests
+        working-directory: app/training
+        run: |
+          python -m pytest -q -rs --junitxml="$RUNNER_TEMP/pytest.xml"
+
+      - name: Set up Rust 1.85.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.85.1'
+          components: rustfmt, clippy
+
+      - name: Rust format and lint
+        working-directory: app/engine
+        run: |
+          cargo fmt --check
+          cargo clippy --release --locked --all-targets -- -D warnings
+
+      - name: Build engine
+        working-directory: app/engine
+        run: cargo build --release --locked
+
+      - name: Export fixture bundle and parity reference (untrained, outside Git)
+        working-directory: app/training
+        run: |
+          mkdir -p "$RUNNER_TEMP/fixture"
+          printf '{"schema_version": 1, "paths": {"output_dir": "%s"}}\n' "$RUNNER_TEMP/fixture/out" > "$RUNNER_TEMP/fixture/config.json"
+          python -m whalemix_training export --config "$RUNNER_TEMP/fixture/config.json" --fixture \
+            --name fixture-b0 --parity-wav "$GITHUB_WORKSPACE/samples/sample-blue-whale-ne-pacific.wav" \
+            | tee "$RUNNER_TEMP/fixture/export.json"
+          python -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['validation_passed'], r" \
+            "$RUNNER_TEMP/fixture/export.json"
+
+      - name: Install Qt dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev libfreetype6-dev ninja-build
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'linux'
+          target: 'desktop'
+          arch: 'linux_gcc_64'
+          modules: 'qtimageformats'
+          cache: true
+
+      - name: Configure CMake with engine tests and fixture paths
+        run: |
+          cmake --preset linux -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
+            -DWHALEMIX_ENGINE_TESTS=ON -DWHALEMIX_REQUIRE_FIXTURE_TESTS=ON \
+            -DWHALEMIX_TEST_ENGINE="$GITHUB_WORKSPACE/app/engine/target/release/whale-mix-engine" \
+            -DWHALEMIX_TEST_FIXTURE_BUNDLE="$RUNNER_TEMP/fixture/out/fixture-bundles/fixture-b0" \
+            -DWHALEMIX_TEST_PARITY_WAV="$GITHUB_WORKSPACE/samples/sample-blue-whale-ne-pacific.wav"
+
+      - name: Build
+        run: cmake --build --preset linux-release
+
+      - name: CTest (GUI fixture, engine cargo tests, parity)
+        run: |
+          ctest --preset linux-release -V --output-on-failure 2>&1 | tee "$RUNNER_TEMP/ctest.log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Report skipped tests
+        if: always()
+        run: |
+          {
+            echo "## Skipped tests"
+            if [ -f "$RUNNER_TEMP/pytest.xml" ]; then
+              python - "$RUNNER_TEMP/pytest.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = ET.parse(sys.argv[1]).getroot().iter("testcase")
+          skipped = [(c.get("classname"), c.get("name"), c.find("skipped").get("message", "")) for c in cases if c.find("skipped") is not None]
+          print(f"- pytest: {len(skipped)} skipped")
+          for cls, name, msg in skipped:
+              print(f"  - {cls}::{name}: {msg}")
+          PY
+            else
+              echo "- pytest: did not run"
+            fi
+            if [ -f "$RUNNER_TEMP/ctest.log" ]; then
+              n=$(grep -cE '\[  SKIPPED \] [A-Za-z]|skipped: |required fixture missing' "$RUNNER_TEMP/ctest.log" || true)
+              echo "- ctest (gtest + cargo): $n skip lines"
+              grep -E '\[  SKIPPED \] [A-Za-z]|skipped: |required fixture missing' "$RUNNER_TEMP/ctest.log" | sed 's/^/  - /' || true
+            else
+              echo "- ctest: did not run"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+
   verify-packages:
     name: Verify Required Packages
     needs: [windows, macos]
