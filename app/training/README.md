@@ -27,6 +27,16 @@ Exact versions verified on the build box are in `requirements-lock.txt`.
 | `inventory` | data | Hash and probe recordings into `source-catalog.jsonl` (read-only, incremental) |
 | `validate-labels` | data | Check annotations against the catalog; write the coverage matrix |
 | `split` | data | Deterministic grouped 70/15/15 split, leakage check, locked split hash |
+| `train` | model | Random-init EfficientNet-B0 session; with `training.max_updates = 0` (this build) it only builds, checks shapes/loss and writes `train-plan.json` |
+| `finetune` | model | Continue a recorded project checkpoint with replay (`--parent`, `paths.replay_manifest`); fixture checkpoints are refused |
+
+### Preprocessing contract (v1)
+
+Per channel, never averaged: Kaiser-sinc polyphase resampling (taps computed by formula), periodic-Hann
+power spectra on a global frame grid, a frequency crop, then fixed-length model windows with an
+end-aligned tail window. `log` or per-window `pcen` compression; optional train-only global
+standardisation. Tensor `float32 [N, 1, bins, frames]`. The full definition and its hash go into every
+checkpoint and bundle. The Rust engine implements the same contract (parity tested).
 
 Paths come only from the config file or `WHALEMIX_RECORDINGS_ROOT`, `WHALEMIX_METADATA_CSV`,
 `WHALEMIX_ANNOTATIONS_CSV` and `WHALEMIX_OUTPUT_DIR`. Outputs inside the recording root are refused.

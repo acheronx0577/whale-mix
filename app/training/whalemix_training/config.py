@@ -14,6 +14,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "WHALEMIX_METADATA_CSV": ("paths", "metadata_csv"),
     "WHALEMIX_ANNOTATIONS_CSV": ("paths", "annotations_csv"),
     "WHALEMIX_OUTPUT_DIR": ("paths", "output_dir"),
+    "WHALEMIX_REPLAY_MANIFEST": ("paths", "replay_manifest"),
 }
 
 DEFAULTS: dict[str, Any] = {
@@ -23,6 +24,7 @@ DEFAULTS: dict[str, Any] = {
         "metadata_csv": None,
         "annotations_csv": None,
         "output_dir": None,
+        "replay_manifest": None,
     },
     "inventory": {"extensions": [".wav", ".flac"], "max_files": None},
     "split": {"seed": 20261125, "fractions": {"train": 0.70, "validation": 0.15, "test": 0.15}},
