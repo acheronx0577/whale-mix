@@ -9,11 +9,10 @@ from typing import Any
 
 import torch
 
-from whalemix_training import annotations as ann
 from whalemix_training import checkpoint as ckpt
-from whalemix_training import inventory
-from whalemix_training.cli import _EXTRA_ARGS, _out_dir, _print, command, data_binding
-from whalemix_training.config import ConfigError, optional_path, require_path
+from whalemix_training.cli import _EXTRA_ARGS, _print, command
+from whalemix_training.config import optional_path, require_path
+from whalemix_training.datalock import SetupRequired, load_locked_data
 from whalemix_training.dataset import WindowLoader
 from whalemix_training.device import DeviceError, DeviceInfo, move_batch, resolve_device
 from whalemix_training.hashing import canonical_hash
@@ -21,7 +20,6 @@ from whalemix_training.io_utils import atomic_write_json, atomic_write_jsonl, re
 from whalemix_training.labels import LabelMap, default_label_map
 from whalemix_training.losses import masked_bce
 from whalemix_training.model import build_model, describe
-from whalemix_training.preprocess import PreprocessingSpec
 from whalemix_training.replay import (
     DeterministicSampler,
     ReplayAdmissionError,
@@ -35,42 +33,13 @@ from whalemix_training.windows import WindowLimitError, build_windows, count_win
 REPO_DIR = Path(__file__).resolve().parents[3]
 
 
-class SetupRequired(RuntimeError):
-    """A prerequisite (labels, split, parent checkpoint, replay manifest) is missing; nothing was trained."""
-
-
 def _prepare(cfg: dict[str, Any]) -> dict[str, Any]:
-    out = _out_dir(cfg)
-    catalog_path, split_path = out / "source-catalog.jsonl", out / "split-manifest.json"
-    validation_path = out / "label-validation.json"
-    for needed in (catalog_path, split_path, validation_path):
-        if not needed.exists():
-            raise SetupRequired(f"missing {needed.name}; run inventory, validate-labels and split first")
-    import json
-
-    split = json.loads(split_path.read_text(encoding="utf-8"))
-    validation = json.loads(validation_path.read_text(encoding="utf-8"))
-    if split.get("leakage_problems"):
-        raise SetupRequired("split manifest has leakage problems")
-    if validation.get("errors"):
-        raise SetupRequired("label validation has errors")
-    try:
-        binding = data_binding(out, cfg)
-    except ConfigError as exc:
-        raise SetupRequired(str(exc)) from exc
-    stale = [k for k in ("catalog_hash", "annotations_sha256") if split.get(k) != binding[k]]
-    if stale or split.get("label_validation_sha256") != binding["label_validation_sha256"]:
-        raise SetupRequired(
-            f"split manifest is stale ({', '.join(stale) or 'label validation'} changed); rerun split"
-        )
-    catalog = inventory.load_catalog(catalog_path)
-    rows = ann.read_annotations(require_path(cfg, "annotations_csv"))
-    spec = PreprocessingSpec.from_config(cfg["preprocessing"])
-    label_map = default_label_map()
+    data = load_locked_data(cfg)
+    catalog, split, spec, label_map = data["catalog"], data["split"], data["spec"], data["label_map"]
     try:
         windows = build_windows(
             catalog,
-            rows,
+            data["rows"],
             split,
             spec,
             label_map,
@@ -79,16 +48,7 @@ def _prepare(cfg: dict[str, Any]) -> dict[str, Any]:
         )
     except WindowLimitError as exc:
         raise SetupRequired(str(exc)) from exc
-    return {
-        "out": out,
-        "catalog": catalog,
-        "split": split,
-        "spec": spec,
-        "label_map": label_map,
-        "windows": windows,
-        "windows_by_split": count_windows(catalog, split, spec),
-        "dataset_hash": canonical_hash([e["sha256"] for e in catalog]),
-    }
+    return {**data, "windows": windows, "windows_by_split": count_windows(catalog, split, spec)}
 
 
 def preflight(prep: dict[str, Any]) -> dict[str, Any]:

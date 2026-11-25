@@ -69,6 +69,7 @@ DEFAULTS: dict[str, Any] = {
         "cuda_index": 0,
     },
     "replay": {"capacity": 10000, "per_stratum_cap": 500, "new_fraction": 0.7, "seed": 77},
+    "evaluation": {"labels": None, "thresholds": {}},
     "selection": {
         "false_alarms_per_hour_budget": 2.0,
         "min_primary_gain": 0.01,

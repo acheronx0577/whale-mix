@@ -16,13 +16,16 @@ from whalemix_training import checkpoint as ckpt
 from whalemix_training import export as exp
 from whalemix_training import laya_adapter, selection
 from whalemix_training.cli import _EXTRA_ARGS, _out_dir, _print, command
-from whalemix_training.hashing import canonical_hash
+from whalemix_training.datalock import SetupRequired
+from whalemix_training.device import DeviceError, resolve_device
+from whalemix_training.hashing import canonical_hash, sha256_file
 from whalemix_training.io_utils import atomic_write_json
 from whalemix_training.labels import default_label_map
 from whalemix_training.metrics import MatchRule, label_metrics
 from whalemix_training.model import build_model
 from whalemix_training.preprocess import PreprocessingSpec, analyze_channel
 from whalemix_training.report import write_reports
+from whalemix_training.scoring import PREDICTIONS_SCHEMA, eval_set_hash, score_split
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -66,6 +69,30 @@ def evidence_groups(report: dict[str, Any], stage: str) -> list[dict[str, Any]]:
     return groups
 
 
+def identity_problems(
+    eval_set: dict[str, Any], predictions: dict[str, Any], cfg: dict[str, Any]
+) -> list[str]:
+    """Predictions must belong to this eval set, preprocessing contract and label map."""
+    if predictions.get("schema") != PREDICTIONS_SCHEMA:
+        return ["predictions were not written by `score` (no identity block)"]
+    expected = {
+        "eval_set_hash": eval_set_hash(eval_set),
+        "preprocessing_hash": PreprocessingSpec.from_config(cfg["preprocessing"]).hash,
+        "label_map_hash": default_label_map().hash,
+        "split_hash": eval_set.get("split_hash"),
+        "split": eval_set.get("split"),
+    }
+    problems = [
+        f"{key} differs between predictions and eval set"
+        for key, value in expected.items()
+        if predictions.get(key) != value
+    ]
+    candidate = predictions.get("candidate") or {}
+    if candidate.get("weights_sha256") != predictions.get("weights_sha256"):
+        problems.append("candidate weights differ from the predictions' weights")
+    return problems
+
+
 def evaluate(eval_set: dict[str, Any], predictions: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     policy = cfg["selection"]
     rule = MatchRule(**eval_set.get("match_rule", {}))
@@ -74,11 +101,12 @@ def evaluate(eval_set: dict[str, Any], predictions: dict[str, Any], cfg: dict[st
     thresholds = predictions.get("thresholds", {})
     report: dict[str, Any] = {
         "stage": eval_set.get("stage", "evaluation"),
+        "split": eval_set.get("split"),
         "fixture": bool(eval_set.get("fixture", False)),
-        "eval_set_hash": canonical_hash(
-            {k: eval_set[k] for k in ("recordings", "truth", "slices") if k in eval_set}
-        ),
+        "eval_set_hash": eval_set_hash(eval_set),
         "weights_sha256": predictions.get("weights_sha256"),
+        "candidate": predictions.get("candidate"),
+        "identity_problems": identity_problems(eval_set, predictions, cfg),
         "preprocessing_hash": predictions.get("preprocessing_hash"),
         "match_rule": rule.to_json(),
         "operating_budget": policy["false_alarms_per_hour_budget"],
@@ -124,8 +152,144 @@ def cmd_evaluate(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     if args.select:
         report["selection"] = selection.select(_out_dir(cfg) / "selection", report, report["gate"])
     write_reports(out, report)
-    _print({"gate": report["gate"]["status"], "report": str(out / "quality_report.json")})
-    return 0 if report["gate"]["status"] == selection.PASS_ELIGIBLE else 1
+    summary = {"gate": report["gate"]["status"], "report": str(out / "quality_report.json")}
+    if args.select:
+        summary["selection"] = {k: v for k, v in report["selection"].items() if k != "report"}
+    _print(summary)
+    passed = report["gate"]["status"] == selection.PASS_ELIGIBLE
+    return 0 if passed and (not args.select or report["selection"]["changed"]) else 1
+
+
+@command("score", "score a trained checkpoint on a locked split; writes predictions.json and eval-set.json")
+def cmd_score(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    try:
+        device = resolve_device(cfg["training"])
+        thresholds = dict(cfg["evaluation"].get("thresholds") or {})
+        if args.use_selected_thresholds:
+            pointer = _out_dir(cfg) / "selection" / "selected.json"
+            if not pointer.exists():
+                raise SetupRequired("--use-selected-thresholds needs selection/selected.json")
+            thresholds = _load_json(pointer)["thresholds"]
+        predictions, eval_set = score_split(cfg, args.checkpoint, args.split, device, thresholds)
+    except (SetupRequired, DeviceError) as exc:
+        _print({"status": "SETUP_REQUIRED", "reason": str(exc)})
+        return 1
+    out = _out_dir(cfg) / "scores" / (args.name or args.split)
+    atomic_write_json(out / "eval-set.json", eval_set)
+    atomic_write_json(out / "predictions.json", predictions)
+    _print(
+        {
+            "predictions": str(out / "predictions.json"),
+            "eval_set": str(out / "eval-set.json"),
+            "events": len(predictions["events"]),
+            "truth_events": len(eval_set["truth"]),
+            "weights_sha256": predictions["weights_sha256"],
+        }
+    )
+    return 0
+
+
+def _qualify(cfg: dict[str, Any], test_report_path: Path) -> dict[str, Any]:
+    """Check the selection, the selected checkpoint and an independent test-split report; return the
+    lineage that a qualified bundle records. Raises SetupRequired on any mismatch."""
+    out = _out_dir(cfg)
+    pointer_path = out / "selection" / "selected.json"
+    if not pointer_path.exists():
+        raise SetupRequired("no selection; run score + evaluate --select on the validation split first")
+    pointer = _load_json(pointer_path)
+    selected_path = out / "selection" / pointer["selected_checkpoint"]
+    if not selected_path.is_file() or sha256_file(selected_path) != pointer["selected_checkpoint_sha256"]:
+        raise SetupRequired("selected checkpoint is missing or changed since selection")
+    spec = PreprocessingSpec.from_config(cfg["preprocessing"])
+    label_map = default_label_map()
+    payload = ckpt.load_checkpoint(
+        selected_path, {"preprocessing_hash": spec.hash, "label_map_hash": label_map.hash}
+    )
+    meta = payload["metadata"]
+    if meta["artifact_kind"] != "selected" or meta["weights_sha256"] != pointer["weights_sha256"]:
+        raise SetupRequired("selected checkpoint does not match the selection pointer")
+    report = _load_json(test_report_path)
+    candidate = report.get("candidate") or {}
+    problems = []
+    if report.get("split") != "test":
+        problems.append("qualification needs a report on the test split")
+    if candidate.get("weights_sha256") != pointer["weights_sha256"]:
+        problems.append("test report is for different weights than the selection")
+    if report.get("eval_set_hash") == pointer["eval_set_hash"]:
+        problems.append("test report reuses the selection eval set")
+    thresholds = {label: m.get("threshold") for label, m in sorted(report.get("labels", {}).items())}
+    if thresholds != pointer["thresholds"]:
+        problems.append("test report thresholds differ from the selected thresholds")
+    regate = selection.gate(
+        {k: v for k, v in report.items() if k not in selection.NON_REPORT_KEYS}, None, cfg["selection"]
+    )
+    recorded = report.get("gate", {}).get("status")
+    if regate["status"] != selection.PASS_ELIGIBLE or recorded != regate["status"]:
+        reasons = "; ".join(regate["reasons"])
+        status = regate["status"]
+        problems.append(f"re-run gate on the test report is {status} (recorded {recorded}): {reasons}")
+    if problems:
+        raise SetupRequired("; ".join(problems))
+    lineage = {
+        k: meta[k]
+        for k in (
+            "initialization",
+            "parent_checkpoint",
+            "code_revision",
+            "dataset_hash",
+            "split_hash",
+            "weights_sha256",
+            "stage",
+            "global_update",
+            "preprocessing_hash",
+            "label_map_hash",
+        )
+    }
+    lineage.update(
+        {
+            "selected_checkpoint_sha256": pointer["selected_checkpoint_sha256"],
+            "source_checkpoint_sha256": pointer["source_checkpoint_sha256"],
+            "validation_report_hash": pointer["report_hash"],
+            "validation_eval_set_hash": pointer["eval_set_hash"],
+            "test_report_hash": selection.report_hash(report),
+            "test_eval_set_hash": report["eval_set_hash"],
+        }
+    )
+    return {"payload": payload, "lineage": lineage, "thresholds": pointer["thresholds"], "spec": spec}
+
+
+@command("qualify", "qualify the selected checkpoint on the test split and publish a qualified bundle")
+def cmd_qualify(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    try:
+        q = _qualify(cfg, args.test_report)
+    except (SetupRequired, ckpt.CheckpointError, KeyError) as exc:
+        _print({"status": "NOT_QUALIFIED", "reason": str(exc)})
+        return 1
+    label_map = default_label_map()
+    torch.manual_seed(int(cfg["training"]["seed"]))
+    model = build_model(label_map, int(cfg["model"]["in_channels"]))
+    model.load_state_dict(q["payload"]["model"])
+    lineage = q["lineage"]
+    qualification = {
+        "status": "qualified",
+        "method": "whalemix_training qualify",
+        "gate": selection.PASS_ELIGIBLE,
+        "lineage": lineage,
+        "lineage_hash": canonical_hash(lineage),
+    }
+    bundle_dir = _out_dir(cfg) / "bundles" / lineage["weights_sha256"][:16]
+    manifest = exp.write_bundle(
+        model, q["spec"], label_map, bundle_dir, "selected", lineage, q["thresholds"], qualification
+    )
+    _print(
+        {
+            "status": "QUALIFIED",
+            "bundle": str(bundle_dir),
+            "sha256": manifest["model"]["sha256"],
+            "lineage_hash": qualification["lineage_hash"],
+        }
+    )
+    return 0
 
 
 @command("export", "export a selected checkpoint (or an explicit untrained fixture) to an ONNX bundle")
@@ -251,7 +415,9 @@ def _evaluate_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--predictions", type=Path, required=True)
     p.add_argument("--parent-report", type=Path, default=None)
     p.add_argument("--stage", default="evaluation")
-    p.add_argument("--select", action="store_true", help="update the selection pointer on PASS_ELIGIBLE")
+    p.add_argument(
+        "--select", action="store_true", help="promote the scored checkpoint on PASS_ELIGIBLE (validation)"
+    )
 
 
 def _export_args(p: argparse.ArgumentParser) -> None:
@@ -263,9 +429,32 @@ def _export_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--parity-wav", type=Path, default=None)
 
 
+def _score_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--checkpoint", type=Path, required=True)
+    p.add_argument("--split", choices=("validation", "test"), required=True)
+    p.add_argument("--name", default=None, help="output folder under scores/ (default: the split name)")
+    p.add_argument(
+        "--use-selected-thresholds",
+        action="store_true",
+        help="score with the thresholds recorded at selection (for the test split)",
+    )
+
+
+def _qualify_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--test-report", type=Path, required=True, help="quality_report.json on the test split")
+
+
 def _benchmark_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--bundle", type=Path, required=True)
     p.add_argument("--wav", type=Path, default=None)
 
 
-_EXTRA_ARGS.update({"evaluate": _evaluate_args, "export": _export_args, "benchmark": _benchmark_args})
+_EXTRA_ARGS.update(
+    {
+        "evaluate": _evaluate_args,
+        "export": _export_args,
+        "benchmark": _benchmark_args,
+        "score": _score_args,
+        "qualify": _qualify_args,
+    }
+)

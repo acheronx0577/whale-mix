@@ -1,4 +1,9 @@
-"""Deterministic candidate gates and atomic selection. Laya advice can never change a gate outcome."""
+"""Deterministic candidate gates and checkpoint-bound selection. Laya advice can never change a gate.
+
+A candidate is only eligible when it carries the identity written by `score` (a trained checkpoint, not
+a fixture), evaluated at least one label, and found something for every label with truth events.
+Selection then promotes that exact checkpoint file (verified by SHA-256) to `selection/selected.pt`.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from whalemix_training import checkpoint as ckpt
+from whalemix_training.hashing import canonical_hash, sha256_file
 from whalemix_training.io_utils import atomic_write_json
 
 PASS_ELIGIBLE = "PASS_ELIGIBLE"
@@ -13,6 +20,13 @@ FAIL = "FAIL"
 INCONCLUSIVE = "INCONCLUSIVE"
 SETUP_REQUIRED = "SETUP_REQUIRED"
 COMPARABLE_KEYS = ("eval_set_hash", "match_rule", "operating_budget", "preprocessing_hash")
+SUPPORTED_CANDIDATES = ("training-state", "selected")
+NON_REPORT_KEYS = ("gate", "advice", "selection")
+
+
+def report_hash(report: dict[str, Any]) -> str:
+    """Hash of the evaluated content only (gate, advice and selection outputs excluded)."""
+    return canonical_hash({k: v for k, v in report.items() if k not in NON_REPORT_KEYS})
 
 
 def _recall(report: dict[str, Any], label: str) -> float | None:
@@ -26,6 +40,18 @@ def gate(candidate: dict[str, Any], parent: dict[str, Any] | None, policy: dict[
     missing = [k for k in required if k not in candidate]
     if missing:
         return {"status": SETUP_REQUIRED, "reasons": [f"candidate report missing {', '.join(missing)}"]}
+    if candidate.get("fixture"):
+        return {"status": SETUP_REQUIRED, "reasons": ["fixture evaluation cannot make a candidate eligible"]}
+    identity = candidate.get("candidate") or {}
+    if identity.get("artifact_kind") not in SUPPORTED_CANDIDATES or not identity.get("weights_sha256"):
+        return {
+            "status": SETUP_REQUIRED,
+            "reasons": ["unsupported candidate: predictions must come from `score` on a trained checkpoint"],
+        }
+    if candidate.get("identity_problems"):
+        return {"status": SETUP_REQUIRED, "reasons": list(candidate["identity_problems"])}
+    if not candidate["labels"]:
+        return {"status": SETUP_REQUIRED, "reasons": ["empty candidate: no labels were evaluated"]}
     if parent is not None:
         differing = [k for k in COMPARABLE_KEYS if candidate.get(k) != parent.get(k)]
         if differing:
@@ -37,6 +63,11 @@ def gate(candidate: dict[str, Any], parent: dict[str, Any] | None, policy: dict[
         return {"status": FAIL, "reasons": ["resource budget exceeded"]}
     labels = sorted(candidate["labels"])
     insufficient = [lbl for lbl in labels if candidate["labels"][lbl].get("evidence") != "sufficient"]
+    for label in labels:
+        m = candidate["labels"][label]
+        recall = m.get("recall")
+        if m.get("truth_events", 1) and recall is not None and recall <= 0.0:
+            reasons.append(f"{label}: zero recall")
     for label in labels:
         fa = candidate["labels"][label].get("false_alarms_per_hour")
         if fa is not None and fa > policy["false_alarms_per_hour_budget"]:
@@ -71,21 +102,71 @@ def gate(candidate: dict[str, Any], parent: dict[str, Any] | None, policy: dict[
     return {"status": PASS_ELIGIBLE, "reasons": []}
 
 
+class SelectionError(RuntimeError):
+    """The scored checkpoint cannot be promoted (missing, changed, or not the scored weights)."""
+
+
+def _promote(selection_dir: Path, report: dict[str, Any]) -> dict[str, Any]:
+    identity = report["candidate"]
+    source = Path(identity["checkpoint_path"])
+    if not source.is_file() or sha256_file(source) != identity["checkpoint_sha256"]:
+        raise SelectionError(f"{source.name} is missing or changed since it was scored")
+    payload = ckpt.load_checkpoint(source)
+    if Path(payload["loaded_from"]) != source:
+        raise SelectionError(f"{source.name} did not load; refusing a last-known-good fallback")
+    meta = dict(payload["metadata"])
+    if meta["weights_sha256"] != identity["weights_sha256"]:
+        raise SelectionError("checkpoint weights differ from the scored weights")
+    meta.pop("weights_sha256")
+    meta["artifact_kind"] = "selected"
+    meta["selection"] = {
+        "source_checkpoint_sha256": identity["checkpoint_sha256"],
+        "report_hash": report_hash(report),
+        "eval_set_hash": report["eval_set_hash"],
+    }
+    target = selection_dir / "selected.pt"
+    weights = ckpt.save_checkpoint(target, {"model": payload["model"], "metadata": meta})
+    return {
+        "weights_sha256": weights,
+        "selected_checkpoint": target.name,
+        "selected_checkpoint_sha256": sha256_file(target),
+        "source_checkpoint_sha256": identity["checkpoint_sha256"],
+        "report_hash": report_hash(report),
+        "eval_set_hash": report["eval_set_hash"],
+        "thresholds": {label: m["threshold"] for label, m in sorted(report["labels"].items())},
+        "report": report,
+    }
+
+
 def select(selection_dir: Path, candidate: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
-    """Append to the improvement ledger; atomically move the selection pointer only on PASS_ELIGIBLE."""
+    """Append to the improvement ledger; on PASS_ELIGIBLE promote the exact scored checkpoint and move
+    the selection pointer atomically. Any other outcome, or a checkpoint that changed, keeps the old one."""
     selection_dir.mkdir(parents=True, exist_ok=True)
     pointer = selection_dir / "selected.json"
     previous = json.loads(pointer.read_text(encoding="utf-8")) if pointer.exists() else None
+    status, reasons = outcome["status"], list(outcome["reasons"])
+    record = None
+    if status == PASS_ELIGIBLE:
+        try:
+            record = _promote(selection_dir, candidate)
+        except (SelectionError, ckpt.CheckpointError, KeyError) as exc:
+            status, reasons = SETUP_REQUIRED, [f"not promoted: {exc}"]
     entry = {
         "candidate_weights_sha256": candidate.get("weights_sha256"),
+        "candidate_checkpoint_sha256": (candidate.get("candidate") or {}).get("checkpoint_sha256"),
         "parent_weights_sha256": None if previous is None else previous.get("weights_sha256"),
-        "status": outcome["status"],
-        "reasons": outcome["reasons"],
+        "status": status,
+        "reasons": reasons,
         "eval_set_hash": candidate.get("eval_set_hash"),
     }
     with (selection_dir / "improvement-ledger.jsonl").open("a", encoding="utf-8") as ledger:
         ledger.write(json.dumps(entry, sort_keys=True) + "\n")
-    if outcome["status"] == PASS_ELIGIBLE:
-        atomic_write_json(pointer, {"weights_sha256": candidate.get("weights_sha256"), "report": candidate})
-        return {"selected": candidate.get("weights_sha256"), "changed": True}
-    return {"selected": None if previous is None else previous.get("weights_sha256"), "changed": False}
+    if record is not None:
+        atomic_write_json(pointer, record)
+        return {"selected": record["weights_sha256"], "changed": True, "status": status}
+    return {
+        "selected": None if previous is None else previous.get("weights_sha256"),
+        "changed": False,
+        "status": status,
+        "reasons": reasons,
+    }

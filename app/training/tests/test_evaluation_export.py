@@ -14,10 +14,12 @@ import pytest
 import torch
 
 from tests.conftest import write_tone
+from whalemix_training import checkpoint as ckpt
 from whalemix_training import export as exp
 from whalemix_training import laya_adapter, selection
 from whalemix_training.cli import main
 from whalemix_training.config import DEFAULTS
+from whalemix_training.hashing import sha256_file
 from whalemix_training.labels import default_label_map
 from whalemix_training.metrics import MatchRule, label_metrics, match, merge_predictions
 from whalemix_training.model import build_model
@@ -89,8 +91,11 @@ def _report(recall: float, fa: float = 0.5, evidence: str = "sufficient", **extr
         "operating_budget": 2.0,
         "preprocessing_hash": "p",
         "resources": {"within_budget": True},
+        "candidate": {"artifact_kind": "training-state", "weights_sha256": extra.get("sha", "cand")},
         "labels": {
             "blue_a": {
+                "truth_events": 20,
+                "threshold": 0.5,
                 "recall": recall,
                 "false_alarms_per_hour": fa,
                 "evidence": evidence,
@@ -126,15 +131,39 @@ def test_gate_outcomes():
     assert selection.gate(starved, None, POLICY)["status"] == selection.FAIL
 
 
+def _scored_checkpoint(path: Path, seed: int) -> dict:
+    """A real training-state checkpoint and the candidate identity `score` would record for it."""
+    torch.manual_seed(seed)
+    model = torch.nn.Linear(2, 1)
+    meta = {k: "x" for k in ckpt.REQUIRED_METADATA} | {"artifact_kind": "training-state", "global_update": 1}
+    weights = ckpt.save_checkpoint(path, {"model": model.state_dict(), "metadata": meta})
+    identity = {
+        "artifact_kind": "training-state",
+        "checkpoint_path": str(path),
+        "checkpoint_sha256": sha256_file(path),
+        "weights_sha256": weights,
+    }
+    return {**_report(0.8, sha=weights), "candidate": identity}
+
+
 def test_selection_is_atomic_and_keeps_previous_on_failure(tmp_path):
-    first = selection.select(tmp_path, _report(0.8, sha="A"), {"status": "PASS_ELIGIBLE", "reasons": []})
-    assert first == {"selected": "A", "changed": True}
+    a = _scored_checkpoint(tmp_path / "a.pt", 1)
+    first = selection.select(tmp_path / "sel", a, {"status": "PASS_ELIGIBLE", "reasons": []})
+    assert first == {"selected": a["weights_sha256"], "changed": True, "status": "PASS_ELIGIBLE"}
+    b = _scored_checkpoint(tmp_path / "b.pt", 2)
     for status in ("FAIL", "INCONCLUSIVE", "SETUP_REQUIRED"):
-        kept = selection.select(tmp_path, _report(0.1, sha="B"), {"status": status, "reasons": ["x"]})
-        assert kept == {"selected": "A", "changed": False}
-    ledger = (tmp_path / "improvement-ledger.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(ledger) == 4
-    assert json.loads((tmp_path / "selected.json").read_text(encoding="utf-8"))["weights_sha256"] == "A"
+        kept = selection.select(tmp_path / "sel", b, {"status": status, "reasons": ["x"]})
+        assert kept["selected"] == a["weights_sha256"] and kept["changed"] is False
+    (tmp_path / "b.pt").write_bytes(b"tampered after scoring")
+    refused = selection.select(tmp_path / "sel", b, {"status": "PASS_ELIGIBLE", "reasons": []})
+    assert refused["changed"] is False and refused["status"] == "SETUP_REQUIRED"
+    ledger = (tmp_path / "sel" / "improvement-ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(ledger) == 5
+    pointer = json.loads((tmp_path / "sel" / "selected.json").read_text(encoding="utf-8"))
+    assert pointer["weights_sha256"] == a["weights_sha256"]
+    assert pointer["source_checkpoint_sha256"] == a["candidate"]["checkpoint_sha256"]
+    promoted = ckpt.load_checkpoint(tmp_path / "sel" / "selected.pt")["metadata"]
+    assert promoted["artifact_kind"] == "selected" and promoted["weights_sha256"] == a["weights_sha256"]
 
 
 GROUPS = [
@@ -301,7 +330,9 @@ def test_cli_evaluate_export_quantize_benchmark(tmp_path, capsys):
         ]
     )
     report = json.loads((out / "reports" / "fixture" / "quality_report.json").read_text(encoding="utf-8"))
-    assert code == 1 and report["gate"]["status"] == "FAIL"  # fixture false alarms exceed the budget
+    # a fixture evaluation is never eligible, and hand-written predictions carry no candidate identity
+    assert code == 1 and report["gate"]["status"] == "SETUP_REQUIRED"
+    assert report["fixture"] is True and report["identity_problems"]
     assert report["retention"]["blue_a@2013"] == 1.0
     assert report["advice"]["source"] == "deterministic_ranking"
     assert (out / "reports" / "fixture" / "Quality-Report.md").exists()

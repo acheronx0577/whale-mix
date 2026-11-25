@@ -103,9 +103,14 @@ def write_bundle(
     kind: str,
     lineage: dict[str, Any],
     thresholds: dict[str, float] | None = None,
+    qualification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Export and validate a bundle. Only the `qualify` command passes a qualification block; everything
+    else is written `unqualified` (or `not-applicable-fixture`), which the engine refuses."""
     if kind not in ("fixture-untrained", "selected"):
         raise ValueError("bundle kind must be fixture-untrained or selected")
+    if qualification is not None and (kind != "selected" or qualification.get("status") != "qualified"):
+        raise ValueError("only a selected checkpoint can carry a qualified status")
     if kind == "selected" and lineage.get("initialization") != "random":
         raise ValueError("a selected bundle must record its random-initialised training lineage")
     model_path = bundle_dir / MODEL_FILE
@@ -143,9 +148,8 @@ def write_bundle(
         "threshold_status": "uncalibrated" if kind == "fixture-untrained" else "validation-calibrated",
         "lineage": lineage,
         "runtime": {"onnxruntime_min": "1.20", "intra_op_threads": 2, "execution_mode": "sequential"},
-        "qualification": {
-            "status": "not-applicable-fixture" if kind == "fixture-untrained" else "unqualified"
-        },
+        "qualification": qualification
+        or {"status": "not-applicable-fixture" if kind == "fixture-untrained" else "unqualified"},
         "validation": validation,
         "created_unix": int(time.time()),
     }
