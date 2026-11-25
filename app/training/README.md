@@ -29,6 +29,15 @@ Exact versions verified on the build box are in `requirements-lock.txt`.
 | `split` | data | Deterministic grouped 70/15/15 split, leakage check, locked split hash |
 | `train` | model | Random-init EfficientNet-B0 session; with `training.max_updates = 0` (this build) it only builds, checks shapes/loss and writes `train-plan.json` |
 | `finetune` | model | Continue a recorded project checkpoint with replay (`--parent`, `paths.replay_manifest`); fixture checkpoints are refused |
+| `evaluate` | eval | Event matching (`event-match-v1`), per-label/slice metrics, retention, gate, optional `--select`, Laya advice |
+| `export` | export | `--checkpoint` (selected only) or `--fixture` (untrained plumbing model) to an ONNX bundle + `bundle.json`; `--parity-wav` writes a Rust parity reference |
+| `quantize` | export | Returns `SETUP_REQUIRED` until real calibration windows and a selected checkpoint exist |
+| `benchmark` | export | Session load, warm batch-8 latency and Python preprocessing speed, labelled `fixture` |
+
+Gates are deterministic: `PASS_ELIGIBLE`, `FAIL`, `INCONCLUSIVE`, `SETUP_REQUIRED`. Only `PASS_ELIGIBLE`
+moves `selection/selected.json` (atomic); every attempt is appended to `improvement-ledger.jsonl`.
+The Laya 0.4.6 adapter (`laya --questions --batch --batch-size --json --device cpu --model`) is advisory
+and falls back to the deterministic ranking on any failure. It never runs in the desktop app.
 
 ### Preprocessing contract (v1)
 

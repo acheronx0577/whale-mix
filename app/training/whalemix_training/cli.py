@@ -126,7 +126,8 @@ def _load_optional_commands() -> None:
         import importlib
 
         importlib.import_module("whalemix_training.model_commands")
+        importlib.import_module("whalemix_training.eval_commands")
     except ImportError as exc:  # pragma: no cover - exercised only without the model extras
         missing = exc.name or ""
-        if missing != "whalemix_training.model_commands" and missing.split(".")[0] not in _OPTIONAL_MODULES:
+        if missing.split(".")[0] not in _OPTIONAL_MODULES:
             raise

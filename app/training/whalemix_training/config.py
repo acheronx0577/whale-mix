@@ -67,7 +67,15 @@ DEFAULTS: dict[str, Any] = {
         "max_retention_drop": 0.02,
         "min_events_per_slice": 20,
     },
-    "laya": {"enabled": False, "executable": "laya", "model": None, "timeout_s": 120, "batch_size": 8},
+    "laya": {
+        "enabled": False,
+        "executable": "laya",
+        "model": None,
+        "model_revision": None,
+        "package_version": "0.4.6",
+        "timeout_s": 120,
+        "batch_size": 8,
+    },
 }
 
 

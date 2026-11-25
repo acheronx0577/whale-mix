@@ -1,0 +1,18 @@
+{
+  "question_set_version": "whalemix-review-v1",
+  "questions": {
+    "next_action": {
+      "type": "choice",
+      "instructions": "You read a measured evidence summary from an acoustic whale-detector development stage. Recommend the single next bounded action. You are advisory: you cannot set labels, thresholds or pass/fail.",
+      "criteria": {
+        "review_labels": "Label conflicts or suspicious annotations dominate the errors; review those labels first.",
+        "mine_hard_negatives": "False alarms concentrate on a real background such as vessels, fish or recorder artifacts; find already-labelled lookalikes.",
+        "rebalance_replay": "Older years or rare classes lost recall; revisit the replay balance.",
+        "find_coverage": "A required class, year or sound family lacks reviewed coverage; search for already-labelled examples.",
+        "investigate_plateau": "Metrics stopped improving across stages without a clear data cause.",
+        "investigate_runtime": "Export parity or desktop timing regressed; locate whether decoding, preprocessing or inference is responsible.",
+        "no_action": "No actionable problem is visible in this evidence."
+      }
+    }
+  }
+}
