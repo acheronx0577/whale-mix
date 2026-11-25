@@ -111,6 +111,85 @@ def blend(
     return {"new": take_new, "replay": replayed, "actual_new_fraction": len(take_new) / max(1, batch_size)}
 
 
+class ReplayMixer:
+    """Batch source for fine-tuning: new-data IDs and replay IDs are mixed so the running share of new
+    examples tracks `new_fraction` (0.7 by default), even when a micro-batch is too small to hold the exact
+    ratio. If replay is empty the batch is all new data. State (sampler cursor, replay RNG and membership,
+    counts) is checkpointed for exact resume."""
+
+    def __init__(self, sampler: DeterministicSampler, replay: StratifiedReplay, new_fraction: float) -> None:
+        if not 0.0 < new_fraction <= 1.0:
+            raise ValueError("replay.new_fraction must be in (0, 1]")
+        self.sampler = sampler
+        self.replay = replay
+        self.new_fraction = new_fraction
+        self.new_examples = 0
+        self.replay_examples = 0
+        self._pending: tuple[int, int] = (0, 0)
+
+    @staticmethod
+    def validate_members(replay: StratifiedReplay, split_of: dict[str, str], cap: int) -> None:
+        """Every replay member must be a current reviewed training window, and no stratum may exceed cap."""
+        for key, members in sorted(replay.members.items()):
+            if len(members) > cap:
+                raise ReplayAdmissionError(
+                    f"replay stratum {key!r} holds {len(members)} > replay.per_stratum_cap {cap}"
+                )
+            for eid in members:
+                split = split_of.get(eid)
+                if split is None:
+                    raise ReplayAdmissionError(f"{eid}: unknown replay id (not a reviewed window here)")
+                if split != "train":
+                    raise ReplayAdmissionError(f"{eid}: held-out ({split}) id in replay memory")
+
+    def draw(self, n: int) -> list[str]:
+        if len(self.replay) == 0:
+            want_new = n
+        else:
+            total = self.new_examples + self.replay_examples + n
+            want_new = min(n, max(0, round(total * self.new_fraction) - self.new_examples))
+        new = self.sampler.draw(min(want_new, n))
+        replayed = self.replay.sample(n - len(new))
+        self._pending = (len(new), len(replayed))
+        return new + replayed
+
+    def consume(self) -> None:
+        self.sampler.consume()
+        self.new_examples += self._pending[0]
+        self.replay_examples += self._pending[1]
+        self._pending = (0, 0)
+
+    @property
+    def epoch(self) -> int:
+        return self.sampler.epoch
+
+    def stats(self) -> dict[str, Any]:
+        total = self.new_examples + self.replay_examples
+        return {
+            "new_examples": self.new_examples,
+            "replay_examples": self.replay_examples,
+            "actual_new_fraction": self.new_examples / total if total else None,
+            "target_new_fraction": self.new_fraction,
+        }
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "sampler": self.sampler.state_dict(),
+            "replay": self.replay.state_dict(),
+            "new_fraction": self.new_fraction,
+            "new_examples": self.new_examples,
+            "replay_examples": self.replay_examples,
+        }
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        if abs(float(state["new_fraction"]) - self.new_fraction) > 1e-12:
+            raise ValueError("mixer state has a different replay.new_fraction")
+        self.sampler.load_state(state["sampler"])
+        self.replay = StratifiedReplay.from_state(state["replay"])
+        self.new_examples = int(state["new_examples"])
+        self.replay_examples = int(state["replay_examples"])
+
+
 @dataclass
 class DeterministicSampler:
     """Seeded per-epoch permutation with a consumption cursor. Prefetching does not move the cursor."""
@@ -119,6 +198,7 @@ class DeterministicSampler:
     seed: int
     epoch: int = 0
     cursor: int = 0
+    _last: list[str] = field(default_factory=list, init=False, repr=False, compare=False)
 
     @property
     def ids_hash(self) -> str:
@@ -138,6 +218,18 @@ class DeterministicSampler:
         if self.cursor >= len(self.example_ids):
             self.epoch += 1
             self.cursor = 0
+
+    def draw(self, n: int) -> list[str]:
+        """Batch-source interface: peek without moving the cursor until `consume`."""
+        self._last = self.peek(n)
+        return self._last
+
+    def consume(self) -> None:
+        self.mark_consumed(len(self._last))
+        self._last = []
+
+    def stats(self) -> dict[str, Any]:
+        return {}
 
     def state_dict(self) -> dict[str, Any]:
         return {"seed": self.seed, "epoch": self.epoch, "cursor": self.cursor, "ids_hash": self.ids_hash}

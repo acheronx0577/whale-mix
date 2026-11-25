@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 
@@ -19,6 +19,15 @@ from whalemix_training.losses import masked_bce
 from whalemix_training.replay import DeterministicSampler
 
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+
+
+class BatchSource(Protocol):
+    """DeterministicSampler or ReplayMixer: draw IDs, then consume them once the micro-batch is used."""
+
+    def draw(self, n: int) -> list[str]: ...
+    def consume(self) -> None: ...
+    def state_dict(self) -> dict[str, Any]: ...
+    def stats(self) -> dict[str, Any]: ...
 
 
 @dataclass
@@ -56,7 +65,7 @@ def build_optimizer(model: torch.nn.Module, training: dict[str, Any]) -> torch.o
 def run_session(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    sampler: DeterministicSampler,
+    sampler: BatchSource | DeterministicSampler,
     load_batch: Callable[[list[str]], Batch],
     budget: SessionBudget,
     micro_batch: int,
@@ -64,10 +73,19 @@ def run_session(
     should_pause: Callable[[], bool] = lambda: False,
     clock: Callable[[], float] = time.monotonic,
     device: DeviceInfo | None = None,
+    start_update: int = 0,
 ) -> dict[str, Any]:
-    allowed = budget.updates_allowed(0)
+    """Run up to the remaining update budget. `on_checkpoint(reason, global_update)` is called only at
+    completed, finite updates, so a non-finite loss stops the session and leaves the last good checkpoint
+    in place."""
+    allowed = budget.updates_allowed(start_update)
     if allowed == 0:
-        return {"optimizer_updates": 0, "stopped": "zero_update_budget", "cursor": sampler.state_dict()}
+        return {
+            "optimizer_updates": 0,
+            "stopped": "zero_update_budget",
+            "cursor": sampler.state_dict(),
+            "mix": sampler.stats(),
+        }
     info = device or resolve_device({})
     model.to(info.device)
     scaler = torch.amp.GradScaler("cuda") if info.precision == "fp16" else None
@@ -83,14 +101,26 @@ def run_session(
             stopped = "session_time"
             break
         optimizer.zero_grad(set_to_none=True)
+        finite = True
         for _ in range(budget.accumulation_steps):
-            ids = sampler.peek(micro_batch)
+            ids = sampler.draw(micro_batch)
             x, y, mask = move_batch(load_batch(ids), info.device)
             with autocast(info):
                 logits = model(x)
             loss = masked_bce(logits.float(), y, mask) / budget.accumulation_steps
+            if not bool(torch.isfinite(loss)):
+                finite = False
+                break
             (scaler.scale(loss) if scaler else loss).backward()
-            sampler.mark_consumed(len(ids))
+            sampler.consume()
+        if not finite:
+            optimizer.zero_grad(set_to_none=True)
+            return {
+                "optimizer_updates": updates,
+                "stopped": "non_finite_loss",
+                "cursor": sampler.state_dict(),
+                "mix": sampler.stats(),
+            }
         if scaler:
             scaler.step(optimizer)
             scaler.update()
@@ -102,7 +132,12 @@ def run_session(
             since_ckpt >= budget.checkpoint_every_updates
             or clock() - last_ckpt_time >= budget.checkpoint_every_seconds
         ):
-            on_checkpoint("periodic", updates)
+            on_checkpoint("periodic", start_update + updates)
             since_ckpt, last_ckpt_time = 0, clock()
-    on_checkpoint(stopped, updates)
-    return {"optimizer_updates": updates, "stopped": stopped, "cursor": sampler.state_dict()}
+    on_checkpoint(stopped, start_update + updates)
+    return {
+        "optimizer_updates": updates,
+        "stopped": stopped,
+        "cursor": sampler.state_dict(),
+        "mix": sampler.stats(),
+    }
