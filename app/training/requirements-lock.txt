@@ -1,0 +1,14 @@
+# Exact versions installed and verified on the build box (Debian 13, Python 3.13.5, CPU-only) on 2026-11-25.
+# Install torch/torchvision from the PyTorch CPU index (or the matching CUDA index for a later GPU run).
+numpy==2.5.4
+scipy==1.18.1
+soundfile==0.14.0
+torch==2.15.0
+torchvision==0.29.2
+onnx==1.23.2
+onnxruntime==1.32.0
+onnxscript==0.7.2
+pytest==9.2.0
+pytest-cov==7.1.0
+ruff==0.17.6
+mypy==2.4.1

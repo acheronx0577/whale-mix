@@ -1,0 +1,16 @@
+# Keep environments, caches, model artifacts, audio and run outputs out of Git.
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+runs/
+outputs/
+*.onnx
+*.onnx.data
+*.pt
+*.pth
+*.ckpt
+*.wav
+*.flac
