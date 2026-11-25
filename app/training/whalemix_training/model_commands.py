@@ -12,8 +12,8 @@ import torch
 from whalemix_training import annotations as ann
 from whalemix_training import checkpoint as ckpt
 from whalemix_training import inventory
-from whalemix_training.cli import _EXTRA_ARGS, _out_dir, _print, command
-from whalemix_training.config import optional_path, require_path
+from whalemix_training.cli import _EXTRA_ARGS, _out_dir, _print, command, data_binding
+from whalemix_training.config import ConfigError, optional_path, require_path
 from whalemix_training.dataset import WindowLoader
 from whalemix_training.hashing import canonical_hash
 from whalemix_training.io_utils import atomic_write_json, read_jsonl
@@ -22,8 +22,9 @@ from whalemix_training.losses import masked_bce
 from whalemix_training.model import build_model, describe
 from whalemix_training.preprocess import PreprocessingSpec
 from whalemix_training.replay import DeterministicSampler, StratifiedReplay
+from whalemix_training.splits import SPLITS
 from whalemix_training.trainer import SessionBudget, build_optimizer, run_session
-from whalemix_training.windows import build_windows
+from whalemix_training.windows import WindowLimitError, build_windows, count_windows
 
 REPO_DIR = Path(__file__).resolve().parents[3]
 
@@ -47,11 +48,31 @@ def _prepare(cfg: dict[str, Any]) -> dict[str, Any]:
         raise SetupRequired("split manifest has leakage problems")
     if validation.get("errors"):
         raise SetupRequired("label validation has errors")
+    try:
+        binding = data_binding(out, cfg)
+    except ConfigError as exc:
+        raise SetupRequired(str(exc)) from exc
+    stale = [k for k in ("catalog_hash", "annotations_sha256") if split.get(k) != binding[k]]
+    if stale or split.get("label_validation_sha256") != binding["label_validation_sha256"]:
+        raise SetupRequired(
+            f"split manifest is stale ({', '.join(stale) or 'label validation'} changed); rerun split"
+        )
     catalog = inventory.load_catalog(catalog_path)
     rows = ann.read_annotations(require_path(cfg, "annotations_csv"))
     spec = PreprocessingSpec.from_config(cfg["preprocessing"])
     label_map = default_label_map()
-    windows = build_windows(catalog, rows, split, spec, label_map)
+    try:
+        windows = build_windows(
+            catalog,
+            rows,
+            split,
+            spec,
+            label_map,
+            reviewed_only=True,
+            max_windows=int(cfg["training"]["max_windows"]),
+        )
+    except WindowLimitError as exc:
+        raise SetupRequired(str(exc)) from exc
     return {
         "out": out,
         "catalog": catalog,
@@ -59,7 +80,44 @@ def _prepare(cfg: dict[str, Any]) -> dict[str, Any]:
         "spec": spec,
         "label_map": label_map,
         "windows": windows,
+        "windows_by_split": count_windows(catalog, split, spec),
         "dataset_hash": canonical_hash([e["sha256"] for e in catalog]),
+    }
+
+
+def preflight(prep: dict[str, Any]) -> dict[str, Any]:
+    """Per-label supervised counts per split, plus warnings and blocking problems for a real run."""
+    label_map: LabelMap = prep["label_map"]
+    totals = prep["windows_by_split"]
+    per_label = {
+        label: {s: {"present": 0, "absent": 0, "unassessed": totals.get(s, 0)} for s in SPLITS}
+        for label in label_map.outputs
+    }
+    for w in prep["windows"]:
+        for label, state in w["states"].items():
+            if state != "unassessed":
+                cell = per_label[label][w["split"]]
+                cell[state] += 1
+                cell["unassessed"] -= 1
+    warnings, blocking = [], []
+    for label in label_map.whale_targets:
+        train = per_label[label]["train"]
+        if train["present"] == 0:
+            warnings.append(f"{label}: no reviewed positive windows in train")
+        elif train["absent"] == 0:
+            warnings.append(f"{label}: positives but no reviewed negatives in train")
+        for s in ("validation", "test"):
+            if per_label[label][s]["present"] == 0:
+                warnings.append(f"{label}: no reviewed positive windows in {s}")
+    supervised = sum(c["train"]["present"] + c["train"]["absent"] for c in per_label.values())
+    if supervised == 0:
+        blocking.append("no supervised targets in train")
+    return {
+        "windows_by_split": {s: totals.get(s, 0) for s in SPLITS},
+        "reviewed_windows_by_split": dict(Counter(w["split"] for w in prep["windows"])),
+        "per_label": per_label,
+        "warnings": warnings,
+        "blocking": blocking,
     }
 
 
@@ -115,8 +173,9 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         "preprocessing": prep["spec"].to_json(),
         "preprocessing_hash": prep["spec"].hash,
         "split_hash": prep["split"]["split_hash"],
-        "windows_by_split": dict(Counter(w["split"] for w in prep["windows"])),
+        "windows_by_split": prep["windows_by_split"],
         "reviewed_train_windows": len(train_ids),
+        "preflight": preflight(prep),
         "budget": vars(budget),
         "imbalance_handling": training["imbalance"],
         "parent": None if parent is None else parent["metadata"]["weights_sha256"],
@@ -135,6 +194,8 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         }
     elif budget.max_updates > 0:
         raise SetupRequired("no reviewed training windows; refusing to train on unlabeled data")
+    if budget.max_updates > 0 and plan["preflight"]["blocking"]:
+        raise SetupRequired(f"preflight blocking: {'; '.join(plan['preflight']['blocking'])}")
 
     ckpt_dir = prep["out"] / "checkpoints"
 

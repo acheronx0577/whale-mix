@@ -27,7 +27,11 @@ DEFAULTS: dict[str, Any] = {
         "replay_manifest": None,
     },
     "inventory": {"extensions": [".wav", ".flac"], "max_files": None},
-    "split": {"seed": 20261125, "fractions": {"train": 0.70, "validation": 0.15, "test": 0.15}},
+    "split": {
+        "seed": 20261125,
+        "fractions": {"train": 0.70, "validation": 0.15, "test": 0.15},
+        "freeze_heldout": True,
+    },
     "preprocessing": {
         "sample_rate": 4000,
         "n_fft": 1024,
@@ -59,6 +63,7 @@ DEFAULTS: dict[str, Any] = {
         "compute_threads": 2,
         "loader_workers": 0,
         "imbalance": "none",
+        "max_windows": 2000000,
     },
     "replay": {"capacity": 10000, "per_stratum_cap": 500, "new_fraction": 0.7, "seed": 77},
     "selection": {

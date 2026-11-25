@@ -73,10 +73,20 @@ def required_max_hz(label: str) -> float | None:
     return None if value is None else float(value)
 
 
-def is_assessable(label: str, sample_rate: float) -> bool:
-    """A reviewed absence only counts when the recording's Nyquist covers the label's required band."""
+def effective_max_hz(sample_rate: float, spec: Any | None = None) -> float:
+    """Highest frequency the model can actually see for a recording: the source Nyquist, capped by the
+    preprocessing output rate and its `fmax_hz` band edge when a spec is given."""
+    limit = sample_rate / 2.0
+    if spec is not None:
+        limit = min(limit, spec.sample_rate / 2.0, float(spec.fmax_hz))
+    return limit
+
+
+def is_assessable(label: str, sample_rate: float, spec: Any | None = None) -> bool:
+    """A reviewed state (present or absent) only supervises a label when the effective bandwidth covers
+    the label's required band; otherwise the target is masked."""
     need = required_max_hz(label)
-    return need is None or sample_rate / 2.0 >= need
+    return need is None or effective_max_hz(sample_rate, spec) >= need
 
 
 def targets_and_mask(states: dict[str, str], label_map: LabelMap) -> tuple[np.ndarray, np.ndarray]:

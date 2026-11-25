@@ -22,6 +22,8 @@ from whalemix_training.io_utils import assert_outside_root, atomic_write_json, a
 
 METADATA_FIELDS = (
     "recording_date",
+    "start_utc",
+    "recorder_id",
     "session",
     "deployment",
     "calibration_status",
@@ -60,9 +62,24 @@ def load_metadata(path: Path | None) -> dict[str, dict[str, str]]:
         return {row["relative_path"].replace("\\", "/"): row for row in reader}
 
 
+PCM_BLOCK_FRAMES = 1 << 16
+
+
+def pcm_sha256(path: Path) -> str:
+    """Hash of the decoded integer samples (streamed in bounded blocks), so the same audio stored in a
+    different container or encoding (WAV vs FLAC) is recognised as a duplicate."""
+    digest = hashlib.sha256()
+    with sf.SoundFile(str(path)) as handle:
+        digest.update(f"{handle.samplerate}:{handle.channels}:".encode())
+        for block in handle.blocks(blocksize=PCM_BLOCK_FRAMES, dtype="int32", always_2d=True):
+            digest.update(block.astype("<i4", copy=False).tobytes())
+    return digest.hexdigest()
+
+
 def probe(path: Path) -> dict[str, Any]:
     try:
         info = sf.info(str(path))
+        content = pcm_sha256(path)
     except (RuntimeError, sf.LibsndfileError) as exc:
         return {"status": "unreadable", "error": str(exc).splitlines()[0][:200]}
     return {
@@ -72,7 +89,13 @@ def probe(path: Path) -> dict[str, Any]:
         "channels": int(info.channels),
         "encoding": f"{info.format}/{info.subtype}",
         "frames": int(info.frames),
+        "pcm_sha256": content,
     }
+
+
+def catalog_hash(entries: list[dict[str, Any]]) -> str:
+    """Identity of a catalog's contents (paths and bytes); recorded by every downstream manifest."""
+    return canonical_hash([e["sha256"] + ":" + e["relative_path"] for e in entries])
 
 
 def build_inventory(
@@ -97,7 +120,12 @@ def build_inventory(
         rel = path.relative_to(root).as_posix()
         stat = path.stat()
         old = previous.get(rel)
-        if old and old.get("size_bytes") == stat.st_size and old.get("mtime_ns") == stat.st_mtime_ns:
+        if (
+            old
+            and old.get("size_bytes") == stat.st_size
+            and old.get("mtime_ns") == stat.st_mtime_ns
+            and (old.get("status") != "ok" or "pcm_sha256" in old)
+        ):
             entry = dict(old)
             reused += 1
         else:
@@ -119,7 +147,7 @@ def build_inventory(
 
     report = summarize(entries)
     report["reused_entries"] = reused
-    report["catalog_hash"] = canonical_hash([e["sha256"] + ":" + e["relative_path"] for e in entries])
+    report["catalog_hash"] = catalog_hash(entries)
     atomic_write_jsonl(catalog_path, entries)
     atomic_write_json(out_dir / "inventory-report.json", report)
     return report

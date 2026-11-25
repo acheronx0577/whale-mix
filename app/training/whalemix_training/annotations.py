@@ -39,7 +39,7 @@ def read_annotations(path: Path) -> list[dict[str, str]]:
 
 
 def _check_row(
-    row: dict[str, str], source: dict[str, Any] | None, label_map: LabelMap
+    row: dict[str, str], source: dict[str, Any] | None, label_map: LabelMap, spec: Any | None = None
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -71,19 +71,29 @@ def _check_row(
         errors.append("channel is out of range for the recording")
     if state == ABSENT and label in label_map.outputs and not is_assessable(label, source["sample_rate"]):
         errors.append("reviewed absence is outside the recording's bandwidth (mark it unassessed)")
+    elif (
+        state in (ABSENT, PRESENT)
+        and review == "reviewed"
+        and label in label_map.outputs
+        and not is_assessable(label, source["sample_rate"], spec)
+    ):
+        warnings.append("label is outside the model's effective bandwidth; its target will be masked")
     if "call-index" in row["provenance"].lower() and review == "reviewed":
         warnings.append("call-index derived row marked reviewed; confirm a human review happened")
     return errors, warnings
 
 
 def validate(
-    rows: list[dict[str, str]], catalog: list[dict[str, Any]], label_map: LabelMap
+    rows: list[dict[str, str]],
+    catalog: list[dict[str, Any]],
+    label_map: LabelMap,
+    spec: Any | None = None,
 ) -> dict[str, Any]:
     sources = {entry["file_id"]: entry for entry in catalog}
     issues: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for number, row in enumerate(rows, start=2):
-        errors, warnings = _check_row(row, sources.get(row["file_id"]), label_map)
+        errors, warnings = _check_row(row, sources.get(row["file_id"]), label_map, spec)
         if row["annotation_id"] in seen_ids:
             errors.append("duplicate annotation_id")
         seen_ids.add(row["annotation_id"])

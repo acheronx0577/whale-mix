@@ -15,8 +15,10 @@ from typing import Any
 from whalemix_training import annotations as ann
 from whalemix_training import inventory, splits
 from whalemix_training.config import ConfigError, load_config, optional_path, require_path
+from whalemix_training.hashing import sha256_file
 from whalemix_training.io_utils import assert_outside_root, atomic_write_json
 from whalemix_training.labels import default_label_map
+from whalemix_training.preprocess import PreprocessingSpec
 
 Handler = Callable[[argparse.Namespace, dict[str, Any]], int]
 COMMANDS: dict[str, tuple[str, Handler]] = {}
@@ -60,8 +62,12 @@ def cmd_inventory(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
 def cmd_validate_labels(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     out = _out_dir(cfg)
     catalog = inventory.load_catalog(out / "source-catalog.jsonl")
-    rows = ann.read_annotations(require_path(cfg, "annotations_csv"))
-    report = ann.validate(rows, catalog, default_label_map())
+    annotations_path = require_path(cfg, "annotations_csv")
+    rows = ann.read_annotations(annotations_path)
+    spec = PreprocessingSpec.from_config(cfg["preprocessing"])
+    report = ann.validate(rows, catalog, default_label_map(), spec)
+    report["catalog_hash"] = inventory.catalog_hash(catalog)
+    report["annotations_sha256"] = sha256_file(annotations_path)
     atomic_write_json(out / "label-validation.json", report)
     _print({"rows": report["rows"], "errors": report["errors"], "warnings": report["warnings"]})
     return 1 if report["errors"] else 0
@@ -71,14 +77,29 @@ def cmd_validate_labels(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
 def cmd_split(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     out = _out_dir(cfg)
     catalog = inventory.load_catalog(out / "source-catalog.jsonl")
-    manifest = splits.assign_splits(catalog, int(cfg["split"]["seed"]), cfg["split"]["fractions"])
-    problems = splits.leakage_check(catalog, manifest)
+    current_catalog = inventory.catalog_hash(catalog)
     annotations_path = optional_path(cfg, "annotations_csv")
+    binding: dict[str, Any] = {"catalog_hash": current_catalog, "annotations_sha256": None}
+    if annotations_path is not None:
+        binding = data_binding(out, cfg)  # raises ConfigError when label validation is stale
+    manifest_path = out / "split-manifest.json"
+    previous = None
+    if manifest_path.exists() and cfg["split"].get("freeze_heldout", True):
+        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = splits.assign_splits(
+            catalog, int(cfg["split"]["seed"]), cfg["split"]["fractions"], previous=previous
+        )
+    except splits.SplitLockError as exc:
+        _print({"status": "HELDOUT_LOCK_FAILED", "problems": exc.problems})
+        return 1
+    problems = splits.leakage_check(catalog, manifest)
     gaps = []
     if annotations_path is not None:
         gaps = splits.heldout_gaps(
             ann.read_annotations(annotations_path), manifest, default_label_map().outputs
         )
+    manifest.update(binding)
     manifest["leakage_problems"] = problems
     manifest["heldout_gaps"] = gaps
     atomic_write_json(out / "split-manifest.json", manifest)
@@ -91,6 +112,25 @@ def cmd_split(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         }
     )
     return 1 if problems else 0
+
+
+def data_binding(out: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Hashes that tie label validation to the exact catalog and annotation file in use.
+
+    Raises ConfigError when label-validation.json is missing or was produced for different inputs."""
+    validation_path = out / "label-validation.json"
+    if not validation_path.exists():
+        raise ConfigError("label-validation.json is missing; run validate-labels first")
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    catalog = inventory.load_catalog(out / "source-catalog.jsonl")
+    current = {
+        "catalog_hash": inventory.catalog_hash(catalog),
+        "annotations_sha256": sha256_file(require_path(cfg, "annotations_csv")),
+    }
+    stale = [k for k, v in current.items() if validation.get(k) != v]
+    if stale:
+        raise ConfigError(f"label validation is stale ({', '.join(stale)} changed); rerun validate-labels")
+    return {**current, "label_validation_sha256": sha256_file(validation_path)}
 
 
 def build_parser() -> argparse.ArgumentParser:
