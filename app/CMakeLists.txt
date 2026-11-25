@@ -230,7 +230,14 @@ add_test(NAME whalemix_gui_tests COMMAND whalemix_gui_tests)
 # bundle exported outside Git (python -m whalemix_training export --fixture). Empty = skipped.
 set(WHALEMIX_TEST_ENGINE "" CACHE FILEPATH "whale-mix-engine binary for fixture GUI tests")
 set(WHALEMIX_TEST_FIXTURE_BUNDLE "" CACHE PATH "untrained fixture bundle for engine tests")
-set(_gui_test_env "QT_QPA_PLATFORM=offscreen")
+set(WHALEMIX_TEST_PARITY_WAV "" CACHE FILEPATH "WAV whose <bundle>-parity-reference.json was exported with the fixture")
+# CI turns this on so fixture-dependent tests fail instead of skipping when a path is missing.
+option(WHALEMIX_REQUIRE_FIXTURE_TESTS "Fail (not skip) fixture-dependent GUI and engine tests" OFF)
+set(_fixture_env "")
+if(WHALEMIX_REQUIRE_FIXTURE_TESTS)
+  list(APPEND _fixture_env "WHALEMIX_REQUIRE_FIXTURE=1")
+endif()
+set(_gui_test_env "QT_QPA_PLATFORM=offscreen" ${_fixture_env})
 if(WHALEMIX_TEST_ENGINE AND WHALEMIX_TEST_FIXTURE_BUNDLE)
   list(APPEND _gui_test_env "WHALEMIX_ENGINE=${WHALEMIX_TEST_ENGINE}"
                             "WHALEMIX_FIXTURE_BUNDLE=${WHALEMIX_TEST_FIXTURE_BUNDLE}")
@@ -243,9 +250,15 @@ if(WHALEMIX_ENGINE_TESTS)
   find_program(CARGO_EXECUTABLE cargo REQUIRED)
   add_test(NAME engine_cargo_tests
     COMMAND ${CARGO_EXECUTABLE} test --release --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/engine/Cargo.toml)
+  set(_engine_test_env ${_fixture_env})
   if(WHALEMIX_TEST_FIXTURE_BUNDLE)
-    set_tests_properties(engine_cargo_tests PROPERTIES
-      ENVIRONMENT "WHALEMIX_FIXTURE_BUNDLE=${WHALEMIX_TEST_FIXTURE_BUNDLE}")
+    list(APPEND _engine_test_env "WHALEMIX_FIXTURE_BUNDLE=${WHALEMIX_TEST_FIXTURE_BUNDLE}")
+  endif()
+  if(WHALEMIX_TEST_PARITY_WAV)
+    list(APPEND _engine_test_env "WHALEMIX_PARITY_WAV=${WHALEMIX_TEST_PARITY_WAV}")
+  endif()
+  if(_engine_test_env)
+    set_tests_properties(engine_cargo_tests PROPERTIES ENVIRONMENT "${_engine_test_env}")
   endif()
 endif()
 

@@ -19,6 +19,15 @@
 #include "EngineBridge.h"
 #include "MainWindow.h"
 
+// A fixture-dependent test cannot run: with WHALEMIX_REQUIRE_FIXTURE=1 (CI) that fails instead of skipping.
+#define WHALEMIX_REQUIRE_OR_SKIP(ok, msg)                                          \
+    do {                                                                            \
+        if (!(ok)) {                                                                \
+            if (qEnvironmentVariable("WHALEMIX_REQUIRE_FIXTURE") == "1") FAIL() << "required: " << msg; \
+            GTEST_SKIP() << msg;                                                    \
+        }                                                                           \
+    } while (0)
+
 using whalemix::EngineBridge;
 using whalemix::EngineLineParser;
 
@@ -103,7 +112,7 @@ TEST(EngineBridgeTest, CsvOnlySessionDoesNotLaunchWorker) {
 }
 
 TEST(EngineBridgeTest, DefaultDiscoveryRefusesFixtureBundles) {
-    if (fixture_bundle().isEmpty()) GTEST_SKIP() << "WHALEMIX_FIXTURE_BUNDLE not set";
+    WHALEMIX_REQUIRE_OR_SKIP(!fixture_bundle().isEmpty(), "WHALEMIX_FIXTURE_BUNDLE not set");
     auto refused = EngineBridge::check_bundle(fixture_bundle(), false);
     EXPECT_FALSE(refused.available);
     EXPECT_EQ(refused.artifact_kind, "fixture-untrained");
@@ -111,7 +120,7 @@ TEST(EngineBridgeTest, DefaultDiscoveryRefusesFixtureBundles) {
 }
 
 TEST(EngineBridgeTest, FixtureInferenceStreamsRowsAndKeepsUiResponsive) {
-    if (fixture_bundle().isEmpty() || engine_exe().isEmpty()) GTEST_SKIP() << "fixture engine not configured";
+    WHALEMIX_REQUIRE_OR_SKIP(!fixture_bundle().isEmpty() && !engine_exe().isEmpty(), "fixture engine not configured");
     QTemporaryDir tmp;
     QStringList wavs;
     for (int i = 0; i < 6; ++i) {
@@ -191,7 +200,7 @@ TEST(EngineBridgeTest, EngineRowsConvertToScoreTableRows) {
 }
 
 TEST(EngineBridgeTest, CancelIsAcknowledgedAndPartialResultsKept) {
-    if (fixture_bundle().isEmpty() || engine_exe().isEmpty()) GTEST_SKIP() << "fixture engine not configured";
+    WHALEMIX_REQUIRE_OR_SKIP(!fixture_bundle().isEmpty() && !engine_exe().isEmpty(), "fixture engine not configured");
     QTemporaryDir tmp;
     QStringList wavs;
     for (int i = 0; i < 4; ++i) {

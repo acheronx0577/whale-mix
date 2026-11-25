@@ -84,6 +84,26 @@ pub fn write_bundle(dir: &Path, kind: &str, qualification: &str, model_bytes: &[
     manifest
 }
 
+/// A fixture-dependent test cannot run. With `WHALEMIX_REQUIRE_FIXTURE=1` (set in CI) that is a failure,
+/// so a missing fixture can never pass silently; otherwise the skip is printed (visible with
+/// `--nocapture`) and recorded in `WHALEMIX_SKIP_LOG` when set.
+pub fn skip(reason: &str) {
+    if std::env::var("WHALEMIX_REQUIRE_FIXTURE").as_deref() == Ok("1") {
+        panic!("required fixture missing: {reason}");
+    }
+    eprintln!("skipped: {reason}");
+    if let Some(log) = std::env::var_os("WHALEMIX_SKIP_LOG") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+        {
+            let _ = writeln!(f, "rust: {reason}");
+        }
+    }
+}
+
 /// Fixture bundle exported by `python -m whalemix_training export --fixture` (kept out of Git).
 pub fn fixture_bundle() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("WHALEMIX_FIXTURE_BUNDLE")?);

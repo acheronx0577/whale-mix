@@ -35,7 +35,7 @@ fn config(
 #[test]
 fn fixture_bundle_end_to_end() {
     let Some(bundle_dir) = common::fixture_bundle() else {
-        eprintln!("skipped: WHALEMIX_FIXTURE_BUNDLE not set");
+        common::skip("WHALEMIX_FIXTURE_BUNDLE not set");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -73,7 +73,7 @@ fn fixture_bundle_end_to_end() {
 #[test]
 fn fixture_matches_python_parity_reference() {
     let Some(bundle_dir) = common::fixture_bundle() else {
-        eprintln!("skipped: WHALEMIX_FIXTURE_BUNDLE not set");
+        common::skip("WHALEMIX_FIXTURE_BUNDLE not set");
         return;
     };
     let reference = bundle_dir.with_file_name(format!(
@@ -81,7 +81,7 @@ fn fixture_matches_python_parity_reference() {
         bundle_dir.file_name().unwrap().to_string_lossy()
     ));
     let Some(wav) = std::env::var_os("WHALEMIX_PARITY_WAV") else {
-        eprintln!("skipped: WHALEMIX_PARITY_WAV not set");
+        common::skip("WHALEMIX_PARITY_WAV not set");
         return;
     };
     let reference: serde_json::Value =
@@ -136,7 +136,7 @@ impl std::io::Write for CancelOnFirstBatch {
 #[test]
 fn cancel_stops_at_a_chunk_boundary_with_valid_partial_output() {
     let Some(bundle_dir) = common::fixture_bundle() else {
-        eprintln!("skipped: WHALEMIX_FIXTURE_BUNDLE not set");
+        common::skip("WHALEMIX_FIXTURE_BUNDLE not set");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -166,7 +166,7 @@ fn cancel_stops_at_a_chunk_boundary_with_valid_partial_output() {
 #[test]
 fn pause_holds_work_until_resume() {
     let Some(bundle_dir) = common::fixture_bundle() else {
-        eprintln!("skipped: WHALEMIX_FIXTURE_BUNDLE not set");
+        common::skip("WHALEMIX_FIXTURE_BUNDLE not set");
         return;
     };
     let dir = tempfile::tempdir().unwrap();

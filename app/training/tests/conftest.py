@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -71,3 +72,17 @@ def corpus(tmp_path: Path) -> dict[str, Path]:
         encoding="utf-8",
     )
     return {"root": root, "meta": meta, "out": out, "config": cfg, "tmp": tmp_path}
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """With WHALEMIX_REQUIRE_FIXTURE=1 (CI integration job) a skipped test fails instead of passing."""
+    outcome = yield
+    report = outcome.get_result()
+    if (
+        report.skipped
+        and not hasattr(report, "wasxfail")
+        and os.environ.get("WHALEMIX_REQUIRE_FIXTURE") == "1"
+    ):
+        report.outcome = "failed"
+        report.longrepr = f"required test was skipped: {report.longrepr}"

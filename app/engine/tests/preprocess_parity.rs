@@ -100,7 +100,7 @@ fn sample_wav_tensors_match_python_reference() {
         common::fixture_bundle(),
         std::env::var_os("WHALEMIX_PARITY_WAV"),
     ) else {
-        eprintln!("skipped: WHALEMIX_FIXTURE_BUNDLE / WHALEMIX_PARITY_WAV not set");
+        common::skip("WHALEMIX_FIXTURE_BUNDLE / WHALEMIX_PARITY_WAV not set");
         return;
     };
     let reference = bundle.with_file_name(format!(
