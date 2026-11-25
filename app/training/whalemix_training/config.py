@@ -69,12 +69,15 @@ DEFAULTS: dict[str, Any] = {
         "cuda_index": 0,
     },
     "replay": {"capacity": 10000, "per_stratum_cap": 500, "new_fraction": 0.7, "seed": 77},
-    "evaluation": {"labels": None, "thresholds": {}},
+    "evaluation": {"labels": None, "thresholds": {}, "purpose": "release"},
     "selection": {
         "false_alarms_per_hour_budget": 2.0,
         "min_primary_gain": 0.01,
         "max_retention_drop": 0.02,
         "min_events_per_slice": 20,
+        # Per-label policy; must be declared before any candidate can be selected (no silent default).
+        "min_recall": {},
+        "min_background_hours": {},
     },
     "laya": {
         "enabled": False,

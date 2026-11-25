@@ -32,7 +32,37 @@ SCORABLE = ("training-state", "selected")
 
 
 def eval_set_hash(eval_set: dict[str, Any]) -> str:
-    return canonical_hash({k: eval_set[k] for k in ("recordings", "truth", "slices") if k in eval_set})
+    keys = ("recordings", "truth", "slices", "reviewed")
+    return canonical_hash({k: eval_set[k] for k in keys if k in eval_set})
+
+
+def reviewed_intervals(
+    rows: list[dict[str, Any]], files: dict[str, dict[str, Any]], labels: list[str], spec: Any
+) -> list[dict[str, Any]]:
+    """Merged reviewed (present or absent) time per recording, channel and label, assessable only.
+    Unreviewed and ambiguous rows say nothing about what is or is not in the audio."""
+    spans: dict[tuple[str, int, str], list[tuple[float, float]]] = {}
+    for r in rows:
+        entry = files.get(r["file_id"])
+        if entry is None or r["review_status"] != "reviewed" or r["label"] not in labels:
+            continue
+        if not is_assessable(r["label"], entry["sample_rate"], spec):
+            continue
+        key = (r["file_id"], int(r["channel"]), r["label"])
+        spans.setdefault(key, []).append((float(r["start_s"]), float(r["end_s"])))
+    out = []
+    for (rec, channel, label), parts in sorted(spans.items()):
+        merged: list[list[float]] = []
+        for start, end in sorted(parts):
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        out += [
+            {"recording_id": rec, "channel": channel, "label": label, "start_s": a, "end_s": b}
+            for a, b in merged
+        ]
+    return out
 
 
 def score_split(
@@ -73,6 +103,14 @@ def score_split(
     ]
     if not files:
         raise SetupRequired(f"no readable recordings in the {split_name} split")
+    reviewed = reviewed_intervals(data["rows"], {e["file_id"]: e for e in files}, labels, spec)
+    attributable = {r["recording_id"] for r in reviewed}
+    unattributable = sorted(e["file_id"] for e in files if e["file_id"] not in attributable)
+    files = [e for e in files if e["file_id"] in attributable]
+    if not files:
+        raise SetupRequired(
+            f"no recording in the {split_name} split has reviewed labels; nothing is attributable"
+        )
 
     model = build_model(label_map, int(cfg["model"]["in_channels"]))
     model.load_state_dict(payload["model"])
@@ -132,6 +170,8 @@ def score_split(
         "labels": labels,
         "recordings": recordings,
         "truth": truth,
+        "reviewed": reviewed,
+        "unattributable_recordings": unattributable,
         "slices": {},
         "split_hash": split["split_hash"],
         "dataset_hash": data["dataset_hash"],

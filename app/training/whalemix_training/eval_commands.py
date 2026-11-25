@@ -93,8 +93,15 @@ def identity_problems(
     return problems
 
 
+PURPOSES = ("release", "dev-pilot")
+DEV_PILOT_CLAIM = "dev pilot: development results only, not release qualification"
+
+
 def evaluate(eval_set: dict[str, Any], predictions: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     policy = cfg["selection"]
+    purpose = cfg["evaluation"].get("purpose", "release")
+    if purpose not in PURPOSES:
+        raise SetupRequired(f"evaluation.purpose must be one of {', '.join(PURPOSES)}")
     rule = MatchRule(**eval_set.get("match_rule", {}))
     hours = sum(r["duration_s"] for r in eval_set["recordings"]) / 3600.0
     labels = sorted({e["label"] for e in eval_set["truth"]} | set(eval_set.get("labels", [])))
@@ -102,6 +109,7 @@ def evaluate(eval_set: dict[str, Any], predictions: dict[str, Any], cfg: dict[st
     report: dict[str, Any] = {
         "stage": eval_set.get("stage", "evaluation"),
         "split": eval_set.get("split"),
+        "purpose": purpose,
         "fixture": bool(eval_set.get("fixture", False)),
         "eval_set_hash": eval_set_hash(eval_set),
         "weights_sha256": predictions.get("weights_sha256"),
@@ -114,6 +122,8 @@ def evaluate(eval_set: dict[str, Any], predictions: dict[str, Any], cfg: dict[st
         "labels": {},
         "retention": {},
     }
+    if purpose == "dev-pilot":
+        report["claim"] = DEV_PILOT_CLAIM
     for label in labels:
         report["labels"][label] = label_metrics(
             eval_set["truth"],
@@ -124,6 +134,7 @@ def evaluate(eval_set: dict[str, Any], predictions: dict[str, Any], cfg: dict[st
             float(thresholds.get(label, 0.5)),
             eval_set.get("slices"),
             int(policy["min_events_per_slice"]),
+            eval_set.get("reviewed"),
         )
     for panel, recording_ids in sorted(eval_set.get("retention_panels", {}).items()):
         ids = set(map(str, recording_ids))
@@ -142,7 +153,16 @@ def evaluate(eval_set: dict[str, Any], predictions: dict[str, Any], cfg: dict[st
 @command("evaluate", "event-level evaluation, deterministic gate, optional selection and Laya advice")
 def cmd_evaluate(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     out = _out_dir(cfg) / "reports" / args.stage
-    report = evaluate(_load_json(args.eval_set), _load_json(args.predictions), cfg)
+    try:
+        report = evaluate(_load_json(args.eval_set), _load_json(args.predictions), cfg)
+    except SetupRequired as exc:
+        _print({"status": "SETUP_REQUIRED", "reason": str(exc)})
+        return 1
+    if args.select and report.get("split") == "test":
+        _print(
+            {"status": "SETUP_REQUIRED", "reason": "selection cannot use the test split (sealed for qualify)"}
+        )
+        return 1
     report["stage"] = args.stage
     parent = _load_json(args.parent_report) if args.parent_report else None
     report["gate"] = selection.gate(report, parent, cfg["selection"])
@@ -160,20 +180,57 @@ def cmd_evaluate(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0 if passed and (not args.select or report["selection"]["changed"]) else 1
 
 
+def _seal_path(cfg: dict[str, Any]) -> Path:
+    return _out_dir(cfg) / "selection" / "test-seal.json"
+
+
+def _check_test_seal(cfg: dict[str, Any], checkpoint: Path, pointer: dict[str, Any]) -> None:
+    """Test scoring is for the selected checkpoint only, and once scored the test split is sealed to
+    those weights: tuning after looking at test results cannot be scored on the same test split."""
+    if not checkpoint.is_file() or sha256_file(checkpoint) != pointer["selected_checkpoint_sha256"]:
+        raise SetupRequired("the test split is sealed to selection/selected.pt; score that checkpoint only")
+    seal = _seal_path(cfg)
+    if seal.exists() and _load_json(seal)["weights_sha256"] != pointer["weights_sha256"]:
+        raise SetupRequired(
+            "the test split was already sealed to other weights; it cannot score a re-tuned model"
+        )
+
+
+def _write_test_seal(cfg: dict[str, Any], predictions: dict[str, Any], eval_set: dict[str, Any]) -> None:
+    seal = _seal_path(cfg)
+    if not seal.exists():
+        atomic_write_json(
+            seal,
+            {
+                "weights_sha256": predictions["weights_sha256"],
+                "checkpoint_sha256": predictions["candidate"]["checkpoint_sha256"],
+                "eval_set_hash": eval_set_hash(eval_set),
+                "sealed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+        )
+
+
 @command("score", "score a trained checkpoint on a locked split; writes predictions.json and eval-set.json")
 def cmd_score(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     try:
         device = resolve_device(cfg["training"])
         thresholds = dict(cfg["evaluation"].get("thresholds") or {})
-        if args.use_selected_thresholds:
-            pointer = _out_dir(cfg) / "selection" / "selected.json"
+        pointer = _out_dir(cfg) / "selection" / "selected.json"
+        if args.use_selected_thresholds or args.split == "test":
             if not pointer.exists():
-                raise SetupRequired("--use-selected-thresholds needs selection/selected.json")
+                raise SetupRequired(
+                    "the test split stays sealed until a selection exists (score + evaluate --select on "
+                    "validation); selected thresholds need selection/selected.json"
+                )
             thresholds = _load_json(pointer)["thresholds"]
+        if args.split == "test":
+            _check_test_seal(cfg, args.checkpoint, _load_json(pointer))
         predictions, eval_set = score_split(cfg, args.checkpoint, args.split, device, thresholds)
     except (SetupRequired, DeviceError) as exc:
         _print({"status": "SETUP_REQUIRED", "reason": str(exc)})
         return 1
+    if args.split == "test":
+        _write_test_seal(cfg, predictions, eval_set)
     out = _out_dir(cfg) / "scores" / (args.name or args.split)
     atomic_write_json(out / "eval-set.json", eval_set)
     atomic_write_json(out / "predictions.json", predictions)
@@ -213,6 +270,8 @@ def _qualify(cfg: dict[str, Any], test_report_path: Path) -> dict[str, Any]:
     problems = []
     if report.get("split") != "test":
         problems.append("qualification needs a report on the test split")
+    if report.get("purpose") != "release":
+        problems.append(f"a {report.get('purpose', 'unlabelled')} report cannot qualify a release")
     if candidate.get("weights_sha256") != pointer["weights_sha256"]:
         problems.append("test report is for different weights than the selection")
     if report.get("eval_set_hash") == pointer["eval_set_hash"]:

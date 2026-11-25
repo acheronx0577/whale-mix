@@ -19,7 +19,7 @@ from whalemix_training.annotations import REQUIRED_COLUMNS
 from whalemix_training.cli import main
 from whalemix_training.config import DEFAULTS
 
-POLICY = DEFAULTS["selection"]
+POLICY = {**DEFAULTS["selection"], "min_recall": {"blue_a": 0.0}, "min_background_hours": {"blue_a": 0.0}}
 
 
 def _full(labels: dict, **extra) -> dict:
@@ -44,6 +44,7 @@ def _label(recall, truth=25, fa=0.1):
         "false_alarms_per_hour": fa,
         "evidence": "sufficient" if truth >= 20 else "insufficient_evidence",
         "recall_ci95": None if recall is None else [recall, recall],
+        "reviewed_background_hours": 10.0,
     }
 
 
@@ -80,7 +81,12 @@ def trained(corpus):
     cfg = json.loads(Path(corpus["config"]).read_text(encoding="utf-8"))
     cfg["preprocessing"] = SMALL_PRE
     cfg["training"] = {"max_updates": 2, "micro_batch": 2, "compute_threads": 1}
-    cfg["selection"] = {"min_events_per_slice": 1, "false_alarms_per_hour_budget": 1e9}
+    cfg["selection"] = {
+        "min_events_per_slice": 1,
+        "false_alarms_per_hour_budget": 1e9,
+        "min_recall": {"blue_a": 0.0},
+        "min_background_hours": {"blue_a": 0.0},
+    }
     cfg["evaluation"] = {"labels": ["blue_a"], "thresholds": {"blue_a": 0.0}}
     Path(corpus["config"]).write_text(json.dumps(cfg), encoding="utf-8")
     assert main(["inventory", "--config", str(corpus["config"])]) == 0
@@ -218,3 +224,58 @@ def test_export_checkpoint_stays_unqualified_and_fixture_cannot_be_scored(traine
     fixture = tmp_path / "fixture.pt"
     ckpt.save_checkpoint(fixture, {"model": payload["model"], "metadata": meta})
     assert _cli(trained, "score", "--checkpoint", str(fixture), "--split", "validation") == 1
+
+
+def test_test_split_is_sealed_to_the_selected_checkpoint(trained, capsys):
+    latest = trained["out"] / "checkpoints" / "latest.pt"
+    capsys.readouterr()
+    assert _cli(trained, "score", "--checkpoint", str(latest), "--split", "test") == 1
+    assert "seal" in capsys.readouterr().out
+    _score_and_select(trained)
+    assert _cli(trained, "score", "--checkpoint", str(latest), "--split", "test") == 1
+    selected = trained["out"] / "selection" / "selected.pt"
+    assert _cli(trained, "score", "--checkpoint", str(selected), "--split", "test") == 0
+    seal_path = trained["out"] / "selection" / "test-seal.json"
+    seal = json.loads(seal_path.read_text("utf-8"))
+    pointer = json.loads((trained["out"] / "selection" / "selected.json").read_text("utf-8"))
+    assert seal["weights_sha256"] == pointer["weights_sha256"]
+    assert _cli(trained, "score", "--checkpoint", str(selected), "--split", "test") == 0  # same weights
+    seal_path.write_text(json.dumps({**seal, "weights_sha256": "tuned-after-test"}), encoding="utf-8")
+    capsys.readouterr()
+    assert _cli(trained, "score", "--checkpoint", str(selected), "--split", "test") == 1
+    assert "sealed" in capsys.readouterr().out
+    seal_path.write_text(json.dumps(seal), encoding="utf-8")
+    d = trained["out"] / "scores" / "test"
+    argv = ["--eval-set", str(d / "eval-set.json"), "--predictions", str(d / "predictions.json")]
+    capsys.readouterr()
+    assert _cli(trained, "evaluate", *argv, "--stage", "test-select", "--select") == 1
+    assert "test split" in capsys.readouterr().out
+
+
+def test_scored_eval_set_lists_reviewed_time_and_attributable_recordings(trained):
+    latest = trained["out"] / "checkpoints" / "latest.pt"
+    assert _cli(trained, "score", "--checkpoint", str(latest), "--split", "validation") == 0
+    eval_set = json.loads((trained["out"] / "scores" / "validation" / "eval-set.json").read_text("utf-8"))
+    reviewed_ids = {r["recording_id"] for r in eval_set["reviewed"]}
+    assert reviewed_ids and {r["recording_id"] for r in eval_set["recordings"]} <= reviewed_ids
+    assert "unattributable_recordings" in eval_set
+
+
+def test_dev_pilot_reports_say_so_and_cannot_qualify(trained, capsys):
+    cfg = json.loads(Path(trained["config"]).read_text(encoding="utf-8"))
+    cfg["evaluation"]["purpose"] = "dev-pilot"
+    Path(trained["config"]).write_text(json.dumps(cfg), encoding="utf-8")
+    _score_and_select(trained)
+    report = json.loads(
+        (trained["out"] / "reports" / "validation" / "quality_report.json").read_text("utf-8")
+    )
+    assert report["purpose"] == "dev-pilot" and "not release" in report["claim"]
+    selected = trained["out"] / "selection" / "selected.pt"
+    assert _cli(trained, "score", "--checkpoint", str(selected), "--split", "test") == 0
+    d = trained["out"] / "scores" / "test"
+    argv = ["--eval-set", str(d / "eval-set.json"), "--predictions", str(d / "predictions.json")]
+    _cli(trained, "evaluate", *argv, "--stage", "test")
+    capsys.readouterr()
+    test_report = trained["out"] / "reports" / "test" / "quality_report.json"
+    assert _cli(trained, "qualify", "--test-report", str(test_report)) == 1
+    assert "dev-pilot" in capsys.readouterr().out

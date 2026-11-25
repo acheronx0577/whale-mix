@@ -52,6 +52,13 @@ def gate(candidate: dict[str, Any], parent: dict[str, Any] | None, policy: dict[
         return {"status": SETUP_REQUIRED, "reasons": list(candidate["identity_problems"])}
     if not candidate["labels"]:
         return {"status": SETUP_REQUIRED, "reasons": ["empty candidate: no labels were evaluated"]}
+    for key in ("min_recall", "min_background_hours"):
+        undeclared = [lbl for lbl in sorted(candidate["labels"]) if lbl not in (policy.get(key) or {})]
+        if undeclared:
+            return {
+                "status": SETUP_REQUIRED,
+                "reasons": [f"selection.{key} not declared for {', '.join(undeclared)}"],
+            }
     if parent is not None:
         differing = [k for k in COMPARABLE_KEYS if candidate.get(k) != parent.get(k)]
         if differing:
@@ -68,6 +75,9 @@ def gate(candidate: dict[str, Any], parent: dict[str, Any] | None, policy: dict[
         recall = m.get("recall")
         if m.get("truth_events", 1) and recall is not None and recall <= 0.0:
             reasons.append(f"{label}: zero recall")
+        minimum = float(policy["min_recall"][label])
+        if recall is not None and recall < minimum:
+            reasons.append(f"{label}: recall {recall:.3f} below minimum recall {minimum:.3f}")
     for label in labels:
         fa = candidate["labels"][label].get("false_alarms_per_hour")
         if fa is not None and fa > policy["false_alarms_per_hour_budget"]:
@@ -85,6 +95,15 @@ def gate(candidate: dict[str, Any], parent: dict[str, Any] | None, policy: dict[
                 reasons.append(f"retention slice {slice_name} dropped {old_value - new_value:.3f}")
     if reasons:
         return {"status": FAIL, "reasons": reasons}
+    thin = []
+    for label in labels:
+        hours = candidate["labels"][label].get("reviewed_background_hours")
+        need = float(policy["min_background_hours"][label])
+        if hours is None or hours < need:
+            have = "none" if hours is None else f"{hours:.3f} h"
+            thin.append(f"{label}: reviewed background {have} below minimum {need:.3f} h")
+    if thin:
+        return {"status": INCONCLUSIVE, "reasons": thin}
     if insufficient:
         return {"status": INCONCLUSIVE, "reasons": [f"insufficient evidence for {', '.join(insufficient)}"]}
     if parent is not None:

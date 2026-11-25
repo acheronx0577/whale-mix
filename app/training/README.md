@@ -41,6 +41,16 @@ export (`--export-checkpoint`). It stops at the first non-zero exit and appends 
 
 Gates are deterministic: `PASS_ELIGIBLE`, `FAIL`, `INCONCLUSIVE`, `SETUP_REQUIRED`. Only `PASS_ELIGIBLE`
 moves `selection/selected.json` (atomic); every attempt is appended to `improvement-ledger.jsonl`.
+Selection needs a per-label policy in the config: `selection.min_recall` and
+`selection.min_background_hours` (for example `{"blue_a": 0.5}`). An undeclared label is
+`SETUP_REQUIRED`, recall below the minimum is `FAIL`, and too little reviewed background is
+`INCONCLUSIVE`. `score` keeps only recordings with reviewed rows (attributable) and writes their merged
+reviewed intervals into `eval-set.json`. False alarms are counted only inside reviewed assessable time
+and divided by those hours; other detections are reported as `unreviewed_detections`.
+The test split is sealed: `score --split test` accepts only `selection/selected.pt`, uses the selected
+thresholds and writes `selection/test-seal.json`; a re-tuned model cannot be scored on it afterwards,
+and `evaluate --select` refuses test-split reports. `evaluation.purpose = "dev-pilot"` marks reports as
+development results; `qualify` accepts only `release` reports.
 The Laya 0.4.6 adapter (`laya --questions --batch --batch-size --json --device cpu --model`) is advisory
 and falls back to the deterministic ranking on any failure. It never runs in the desktop app.
 

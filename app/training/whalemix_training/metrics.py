@@ -113,6 +113,46 @@ def _in_ranges(p: dict[str, Any], ranges: list[dict[str, Any]]) -> bool:
     )
 
 
+def _union(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for start, end in sorted(spans):
+        if out and start <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        elif end > start:
+            out.append((start, end))
+    return out
+
+
+def _by_track(events: list[dict[str, Any]], label: str) -> dict[tuple[str, int], list[tuple[float, float]]]:
+    tracks: dict[tuple[str, int], list[tuple[float, float]]] = defaultdict(list)
+    for e in events:
+        if e["label"] == label:
+            tracks[(str(e["recording_id"]), int(e.get("channel", 0)))].append((e["start_s"], e["end_s"]))
+    return {k: _union(v) for k, v in tracks.items()}
+
+
+def _overlap_s(a: list[tuple[float, float]], b: list[tuple[float, float]]) -> float:
+    return sum(max(0.0, min(e1, e2) - max(s1, s2)) for s1, e1 in a for s2, e2 in b)
+
+
+def reviewed_exposure(
+    truth: list[dict[str, Any]], reviewed: list[dict[str, Any]], label: str
+) -> tuple[dict[tuple[str, int], list[tuple[float, float]]], float, float]:
+    """Reviewed assessable spans per (recording, channel), their hours, and the background hours (reviewed
+    time outside this label's reviewed calls)."""
+    spans = _by_track(reviewed, label)
+    calls = _by_track(truth, label)
+    total = sum(e - s for track in spans.values() for s, e in track)
+    inside_calls = sum(_overlap_s(track, calls.get(key, [])) for key, track in spans.items())
+    return spans, total / 3600.0, (total - inside_calls) / 3600.0
+
+
+def _centre_in(p: dict[str, Any], spans: dict[tuple[str, int], list[tuple[float, float]]]) -> bool:
+    centre = (p["start_s"] + p["end_s"]) / 2
+    track = spans.get((str(p["recording_id"]), int(p.get("channel", 0))), [])
+    return any(s <= centre < e for s, e in track)
+
+
 def label_metrics(
     truth: list[dict[str, Any]],
     preds: list[dict[str, Any]],
@@ -122,7 +162,12 @@ def label_metrics(
     threshold: float,
     slices: dict[str, list[dict[str, Any]]] | None = None,
     min_events: int = 20,
+    reviewed: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """With `reviewed` (the eval set's reviewed assessable intervals) false alarms are counted only inside
+    reviewed time and divided by reviewed hours; detections elsewhere are reported as unreviewed, since
+    nobody checked whether a call was there. Without it the legacy analysed-hours basis is used and the
+    report carries no reviewed background exposure."""
     t = [e for e in truth if e["label"] == label]
     p_all = [e for e in preds if e["label"] == label]
     ranked = match(t, p_all, rule)
@@ -130,6 +175,18 @@ def label_metrics(
     result = match(t, [e for e in p_all if e["score"] >= threshold], rule)
     tp = sum(1 for o in result["outcomes"] if o["truth_index"] is not None)
     fp_events = [o["prediction"] for o in result["outcomes"] if o["truth_index"] is None]
+    unreviewed = 0
+    exposure: dict[str, Any] = {"exposure_basis": "analyzed"}
+    if reviewed is not None:
+        spans, analyzed_hours, background = reviewed_exposure(truth, reviewed, label)
+        unreviewed = sum(1 for p in fp_events if not _centre_in(p, spans))
+        fp_events = [p for p in fp_events if _centre_in(p, spans)]
+        exposure = {
+            "exposure_basis": "reviewed",
+            "reviewed_hours": analyzed_hours,
+            "reviewed_background_hours": background,
+            "unreviewed_detections": unreviewed,
+        }
     fn = len(result["misses"])
     review = sum(1 for o in result["outcomes"] if o["prediction"].get("review"))
     out: dict[str, Any] = {
@@ -147,6 +204,7 @@ def label_metrics(
         "review_events_per_hour": review / analyzed_hours if analyzed_hours > 0 else None,
         "evidence": "sufficient" if len(t) >= min_events else "insufficient_evidence",
         "recall_ci95": grouped_recall_ci(result, t) if len(t) >= min_events else None,
+        **exposure,
     }
     if slices:
         out["false_alarms_by_slice"] = {}

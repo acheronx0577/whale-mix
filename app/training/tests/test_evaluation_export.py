@@ -100,6 +100,7 @@ def _report(recall: float, fa: float = 0.5, evidence: str = "sufficient", **extr
                 "false_alarms_per_hour": fa,
                 "evidence": evidence,
                 "recall_ci95": [recall - 0.05, recall + 0.05],
+                "reviewed_background_hours": 10.0,
             }
         },
         "retention": extra.get("retention", {}),
@@ -107,7 +108,7 @@ def _report(recall: float, fa: float = 0.5, evidence: str = "sufficient", **extr
     }
 
 
-POLICY = DEFAULTS["selection"]
+POLICY = {**DEFAULTS["selection"], "min_recall": {"blue_a": 0.0}, "min_background_hours": {"blue_a": 0.0}}
 
 
 def test_gate_outcomes():
