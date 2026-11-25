@@ -14,6 +14,7 @@ from typing import Any
 
 import torch
 
+from whalemix_training.device import DeviceInfo, autocast, move_batch, resolve_device
 from whalemix_training.losses import masked_bce
 from whalemix_training.replay import DeterministicSampler
 
@@ -62,10 +63,14 @@ def run_session(
     on_checkpoint: Callable[[str, int], None],
     should_pause: Callable[[], bool] = lambda: False,
     clock: Callable[[], float] = time.monotonic,
+    device: DeviceInfo | None = None,
 ) -> dict[str, Any]:
     allowed = budget.updates_allowed(0)
     if allowed == 0:
         return {"optimizer_updates": 0, "stopped": "zero_update_budget", "cursor": sampler.state_dict()}
+    info = device or resolve_device({})
+    model.to(info.device)
+    scaler = torch.amp.GradScaler("cuda") if info.precision == "fp16" else None
     model.train()
     start = last_ckpt_time = clock()
     updates = since_ckpt = 0
@@ -80,11 +85,17 @@ def run_session(
         optimizer.zero_grad(set_to_none=True)
         for _ in range(budget.accumulation_steps):
             ids = sampler.peek(micro_batch)
-            x, y, mask = load_batch(ids)
-            loss = masked_bce(model(x), y, mask) / budget.accumulation_steps
-            loss.backward()
+            x, y, mask = move_batch(load_batch(ids), info.device)
+            with autocast(info):
+                logits = model(x)
+            loss = masked_bce(logits.float(), y, mask) / budget.accumulation_steps
+            (scaler.scale(loss) if scaler else loss).backward()
             sampler.mark_consumed(len(ids))
-        optimizer.step()
+        if scaler:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         updates += 1
         since_ckpt += 1
         if (

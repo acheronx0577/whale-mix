@@ -15,6 +15,7 @@ from whalemix_training import inventory
 from whalemix_training.cli import _EXTRA_ARGS, _out_dir, _print, command, data_binding
 from whalemix_training.config import ConfigError, optional_path, require_path
 from whalemix_training.dataset import WindowLoader
+from whalemix_training.device import DeviceError, DeviceInfo, move_batch, resolve_device
 from whalemix_training.hashing import canonical_hash
 from whalemix_training.io_utils import atomic_write_json, read_jsonl
 from whalemix_training.labels import LabelMap, default_label_map
@@ -152,15 +153,17 @@ def _metadata(
 
 
 def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: dict[str, Any] | None) -> int:
-    prep = _prepare(cfg)
     training = cfg["training"]
+    info: DeviceInfo = resolve_device(training)
+    prep = _prepare(cfg)
     torch.manual_seed(int(training["seed"]))
     torch.set_num_threads(int(training["compute_threads"]))
     label_map = prep["label_map"]
     model = build_model(label_map, int(cfg["model"]["in_channels"]), "random")
-    optimizer = build_optimizer(model, training)
     if parent is not None:
         model.load_state_dict(parent["model"])
+    model.to(info.device)
+    optimizer = build_optimizer(model, training)
     train_ids = sorted(w["example_id"] for w in prep["windows"] if w["split"] == "train" and w["reviewed"])
     sampler = DeterministicSampler(train_ids, int(training["seed"]))
     budget = SessionBudget.from_config(training)
@@ -178,10 +181,13 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         "preflight": preflight(prep),
         "budget": vars(budget),
         "imbalance_handling": training["imbalance"],
+        "device": info.to_json(),
         "parent": None if parent is None else parent["metadata"]["weights_sha256"],
     }
     if train_ids:
-        x, y, mask = loader(sampler.peek(min(int(training["micro_batch"]), len(train_ids))))
+        x, y, mask = move_batch(
+            loader(sampler.peek(min(int(training["micro_batch"]), len(train_ids)))), info.device
+        )
         model.eval()
         with torch.no_grad():
             logits = model(x)
@@ -200,20 +206,22 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
     ckpt_dir = prep["out"] / "checkpoints"
 
     def on_checkpoint(reason: str, updates: int) -> None:
+        meta = _metadata(
+            cfg, prep, label_map, stage, plan["parent"], sampler.epoch, updates, "training-state"
+        )
+        meta["device"] = plan["device"]
         payload = {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "sampler": sampler.state_dict(),
             "rng": ckpt.rng_states(),
             "reason": reason,
-            "metadata": _metadata(
-                cfg, prep, label_map, stage, plan["parent"], sampler.epoch, updates, "training-state"
-            ),
+            "metadata": meta,
         }
         ckpt.save_checkpoint(ckpt_dir / "latest.pt", payload)
 
     result = run_session(
-        model, optimizer, sampler, loader, budget, int(training["micro_batch"]), on_checkpoint
+        model, optimizer, sampler, loader, budget, int(training["micro_batch"]), on_checkpoint, device=info
     )
     plan["session"] = result
     plan["weights_written"] = result["optimizer_updates"] > 0
@@ -236,6 +244,9 @@ def cmd_train(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     except SetupRequired as exc:
         _print({"status": "SETUP_REQUIRED", "reason": str(exc)})
         return 1
+    except DeviceError as exc:
+        _print({"status": "DEVICE_UNAVAILABLE", "reason": str(exc)})
+        return 1
 
 
 @command("finetune", "continue a recorded project checkpoint with replay (setup-only when max_updates is 0)")
@@ -253,6 +264,9 @@ def cmd_finetune(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         return _session(args, cfg, "finetune", parent)
     except (SetupRequired, ckpt.CheckpointError) as exc:
         _print({"status": "SETUP_REQUIRED", "reason": str(exc)})
+        return 1
+    except DeviceError as exc:
+        _print({"status": "DEVICE_UNAVAILABLE", "reason": str(exc)})
         return 1
 
 

@@ -64,6 +64,9 @@ DEFAULTS: dict[str, Any] = {
         "loader_workers": 0,
         "imbalance": "none",
         "max_windows": 2000000,
+        "device": "cpu",
+        "precision": "fp32",
+        "cuda_index": 0,
     },
     "replay": {"capacity": 10000, "per_stratum_cap": 500, "new_fraction": 0.7, "seed": 77},
     "selection": {
