@@ -78,6 +78,7 @@ def run_session(
     start_update: int = 0,
     on_update: Callable[[int, list[str]], None] | None = None,
     scaler: Any = None,
+    lr_at: Callable[[int], float] | None = None,
 ) -> dict[str, Any]:
     """Run up to the remaining update budget. `on_checkpoint(reason, global_update)` is called only at
     completed, finite updates, so a non-finite loss stops the session and leaves the last good checkpoint
@@ -128,6 +129,11 @@ def run_session(
                 "cursor": sampler.state_dict(),
                 "mix": sampler.stats(),
             }
+        if lr_at is not None:
+            # Rate of this update from its global index only, so a resumed run continues the schedule.
+            rate = lr_at(start_update + updates)
+            for group in optimizer.param_groups:
+                group["lr"] = rate
         if scaler:
             scaler.step(optimizer)
             scaler.update()

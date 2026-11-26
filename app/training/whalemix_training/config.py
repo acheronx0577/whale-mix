@@ -85,6 +85,9 @@ DEFAULTS: dict[str, Any] = {
         # with weight n_g ** temperature, then that group's next window) and "positive_group_temperature"
         # (default 1.0 = proportional; 0.5 = square root; 0.0 = equal per group).
         "balance": {"positive_fraction": 0.25, "labels": None},
+        # Optional late-training settings (off unless set, not defaulted here; see tail_average.py):
+        # "lr_schedule" {"kind": "cosine", "start_update", "end_update", "final_factor"} and
+        # "tail_average" {"start_update", "every_updates", "bn_refresh_batches"}.
         "max_windows": 2000000,
         "device": "cpu",
         "precision": "fp32",

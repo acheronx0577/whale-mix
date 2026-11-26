@@ -11,11 +11,12 @@ from typing import Any
 import torch
 
 from whalemix_training import checkpoint as ckpt
+from whalemix_training import tail_average as tail_mod
 from whalemix_training.cli import _EXTRA_ARGS, _print, command
 from whalemix_training.config import optional_path, require_path
 from whalemix_training.datalock import SetupRequired, load_locked_data
 from whalemix_training.dataset import WindowLoader
-from whalemix_training.device import DeviceError, DeviceInfo, move_batch, resolve_device
+from whalemix_training.device import DeviceError, DeviceInfo, autocast, move_batch, resolve_device
 from whalemix_training.feature_cache import FeatureCache
 from whalemix_training.hashing import canonical_hash
 from whalemix_training.io_utils import assert_outside_root, atomic_write_json, atomic_write_jsonl, read_jsonl
@@ -331,6 +332,12 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         model.load_state_dict(resume["model"])
     model.to(info.device)
     optimizer = build_optimizer(model, training)
+    try:
+        lr_schedule = tail_mod.validate_lr_schedule(training.get("lr_schedule"))
+        tail = tail_mod.TailAverage.from_config(training.get("tail_average"))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise SetupRequired(f"invalid late-training settings: {exc}") from exc
+    lr_at = tail_mod.lr_function(float(training["learning_rate"]), lr_schedule)
     train_ids = sorted(w["example_id"] for w in prep["windows"] if w["split"] == "train" and w["reviewed"])
     source: DeterministicSampler | ReplayMixer
     if stage == "finetune":
@@ -360,6 +367,8 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         try:
             optimizer.load_state_dict(resume["optimizer"])
             source.load_state(resume["mixer"] if stage == "finetune" else resume["sampler"])
+            if tail is not None:
+                tail.load_state(resume.get("tail_average"), int(resume["metadata"]["global_update"]))
         except (ValueError, KeyError, RuntimeError) as exc:
             raise SetupRequired(f"cannot resume: {exc}") from exc
         start_update = int(resume["metadata"]["global_update"])
@@ -420,6 +429,8 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         },
         "exact_resume": None if resume is None else transition is None,
         "hardware_transition": transition,
+        "lr_schedule": lr_schedule,
+        "tail_average": None if tail is None else tail.config(),
     }
     if isinstance(source, ReplayMixer):
         plan["replay"] = {
@@ -459,6 +470,8 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         with sample_log.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"global_update": update, "ids": ids}) + "\n")
+        if tail is not None:
+            tail.observe(update, model)
 
     root_init = "random" if parent is None else parent["metadata"].get("initialization", "random")
 
@@ -479,6 +492,8 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
             payload["mixer"] = source.state_dict()
         if scaler is not None:
             payload["scaler"] = scaler.state_dict()
+        if tail is not None:
+            payload["tail_average"] = tail.state_dict()
         ckpt.save_checkpoint(ckpt_dir / "latest.pt", payload)
 
     try:
@@ -494,7 +509,18 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
             start_update=start_update,
             on_update=on_update,
             scaler=scaler,
+            lr_at=lr_at,
         )
+        done = start_update + result["optimizer_updates"]
+        if (
+            tail is not None
+            and result["optimizer_updates"] > 0
+            and done == budget.max_updates
+            and tail.expected_count(done) > 0
+        ):
+            plan["tail_average_result"] = _write_tail_average(
+                cfg, prep, label_map, stage, plan, tail, model, loader, info, train_ids, done, ckpt_dir
+            )
     finally:
         loader.close()
     plan["session"] = result
@@ -517,6 +543,63 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         }
     )
     return 0
+
+
+def _write_tail_average(
+    cfg: dict[str, Any],
+    prep: dict[str, Any],
+    label_map: LabelMap,
+    stage: str,
+    plan: dict[str, Any],
+    tail: tail_mod.TailAverage,
+    model: torch.nn.Module,
+    loader: Any,
+    info: DeviceInfo,
+    train_ids: list[str],
+    done: int,
+    ckpt_dir: Path,
+) -> dict[str, Any]:
+    """Save the tail-averaged weights (BatchNorm statistics refreshed on reviewed TRAIN windows only) as a
+    separate scorable checkpoint. The live model and `latest.pt` are not changed."""
+    expected = tail.expected_count(done)
+    if tail.count != expected or tail.last_update != tail.start_update + (expected - 1) * tail.every_updates:
+        raise SetupRequired(f"tail average holds {tail.count} snapshots, expected {expected}")
+    averaged = build_model(label_map, int(cfg["model"]["in_channels"]), "random")
+    averaged.load_state_dict(tail.averaged_state(averaged.state_dict()))
+    averaged.to(info.device)
+    train_set = {w["example_id"] for w in prep["windows"] if w["split"] == "train" and w["reviewed"]}
+    batches = tail_mod.bn_refresh_ids(
+        train_ids, tail.bn_refresh_batches, int(cfg["training"]["micro_batch"]), int(cfg["training"]["seed"])
+    )
+    if any(eid not in train_set for ids in batches for eid in ids):
+        raise SetupRequired("BatchNorm refresh may only use reviewed training windows")
+
+    def load_x(ids: list[str]) -> torch.Tensor:
+        x, _, _ = move_batch(loader(ids), info.device)
+        return x
+
+    used = 0
+    if tail_mod.has_batchnorm(averaged):
+        with autocast(info):
+            used = tail_mod.refresh_batchnorm(averaged, batches, load_x)
+    meta = _metadata(cfg, prep, label_map, stage, plan["parent"], 0, done, "training-state")
+    summary = {
+        **tail.config(),
+        "snapshots": tail.count,
+        "first_update": tail.start_update,
+        "last_update": tail.last_update,
+        "bn_refresh_batches_used": used,
+        "bn_refresh_windows": sum(len(ids) for ids in batches[:used]),
+        "bn_refresh_split": "train",
+        "live_weights_sha256": ckpt.state_dict_sha256(model.state_dict()),
+    }
+    meta.update({"device": plan["device"], "tail_average": summary})
+    path = ckpt_dir / f"tail-average-u{done}.pt"
+    summary["checkpoint"] = str(path)
+    summary["weights_sha256"] = ckpt.save_checkpoint(
+        path, {"model": averaged.state_dict(), "metadata": meta, "reason": "tail_average"}
+    )
+    return summary
 
 
 def _trim_sample_log(path: Path, keep_through: int) -> None:
