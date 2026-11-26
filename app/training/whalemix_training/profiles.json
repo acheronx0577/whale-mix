@@ -1,0 +1,55 @@
+{
+  "profiles_version": "acoustic-v1.0",
+  "note": "Profiles are configuration, not learned knowledge. Bandwidth values are starting requirements to validate on reviewed real data.",
+  "whale_targets": ["blue_a", "blue_b", "fin_20hz_pulse", "humpback_song"],
+  "context_targets": [
+    "vessel",
+    "other_human",
+    "fish",
+    "invertebrate",
+    "other_marine_mammal",
+    "weather_water",
+    "recorder_artifact"
+  ],
+  "profiles": [
+    {
+      "id": "blue_whale",
+      "status": "required",
+      "species": "Balaenoptera musculus",
+      "outputs": ["blue_a", "blue_b"],
+      "required_max_hz": 100,
+      "result_granularity": "coarse_window",
+      "second_pass": {"max_extra_views": 1}
+    },
+    {
+      "id": "fin_whale",
+      "status": "required",
+      "species": "Balaenoptera physalus",
+      "outputs": ["fin_20hz_pulse"],
+      "required_max_hz": 40,
+      "result_granularity": "coarse_window",
+      "second_pass": {"max_extra_views": 1}
+    },
+    {
+      "id": "humpback_whale",
+      "status": "required",
+      "species": "Megaptera novaeangliae",
+      "outputs": ["humpback_song"],
+      "required_max_hz": 1000,
+      "result_granularity": "song_interval",
+      "second_pass": {"max_extra_views": 1}
+    },
+    {"id": "minke_whale", "status": "planned", "outputs": [], "required_max_hz": null},
+    {"id": "north_atlantic_right_whale", "status": "planned", "outputs": [], "required_max_hz": null},
+    {"id": "sei_whale", "status": "planned", "outputs": [], "required_max_hz": null}
+  ],
+  "context_required_max_hz": {
+    "vessel": 1000,
+    "other_human": 1000,
+    "fish": 1000,
+    "invertebrate": 20000,
+    "other_marine_mammal": 20000,
+    "weather_water": 1000,
+    "recorder_artifact": null
+  }
+}

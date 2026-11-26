@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "paths": {
+    "recordings_root": null,
+    "metadata_csv": null,
+    "annotations_csv": null,
+    "output_dir": null
+  },
+  "split": {"seed": 20261125, "fractions": {"train": 0.70, "validation": 0.15, "test": 0.15}},
+  "training": {"max_updates": 0, "micro_batch": 4, "compute_threads": 2},
+  "laya": {"enabled": false, "executable": "laya", "model": null}
+}

@@ -20,6 +20,9 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QKeyEvent>
+#include <QDirIterator>
+#include <QFutureWatcher>
+#include <QtConcurrent/QtConcurrentRun>
 #include <set>
 
 #ifdef Q_OS_WIN
@@ -138,12 +141,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             open_file(path);
         });
         connect(dlg, &gui::SourcePickerDialog::audio_files_chosen, this, [this](const QStringList& paths) {
-            if (!paths.isEmpty()) {
-                QFileInfo fi(paths.first());
-                status_bar_->set_status(QString("Loaded raw audio %1 (%2 files) — generate spectrogram or score")
-                    .arg(fi.fileName())
-                    .arg(paths.size()));
-            }
+            ingest_paths(paths);
         });
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->exec();
@@ -161,6 +159,120 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(detail_panel_, &gui::DetailPanel::label_selected, this, &MainWindow::set_manual_label);
 
     connect(&state_, &AppState::status_message, status_bar_, &gui::StatusBar::set_status);
+
+    engine_ = new EngineBridge(this);  // no worker process starts until audio is queued
+    connect_engine();
+}
+
+void MainWindow::set_engine_bridge(EngineBridge* bridge) {
+    if (engine_ && engine_ != bridge) engine_->deleteLater();
+    engine_ = bridge;
+    engine_->setParent(this);
+    connect_engine();
+}
+
+void MainWindow::connect_engine() {
+    connect(engine_, &EngineBridge::model_unavailable, this, [this](const QString& reason) {
+        status_bar_->set_status(QString("Model unavailable: %1. CSV viewing still works.").arg(reason));
+    });
+    connect(engine_, &EngineBridge::run_started, this, [this](const QString& run_dir, int total) {
+        // Engine results replace the table; they are written under the run directory, not a CSV.
+        state_.set_rows({}, QDir(run_dir).filePath("out/results.partial.jsonl"));
+        top_bar_->set_file_name(QFileInfo(run_dir).fileName());
+        update_all_views();
+        status_bar_->set_status(QString("Analyzing audio: 0 of %1 files").arg(total));
+    });
+    connect(engine_, &EngineBridge::rows_committed, this, [this](qint64) { append_engine_rows(); });
+    connect(engine_, &EngineBridge::progress, this, [this](int done, int total, qint64 windows) {
+        status_bar_->set_status(QString("Analyzing audio: %1 of %2 files, %3 windows, %4 results committed")
+                                    .arg(done).arg(total).arg(windows).arg(engine_->committed_rows()));
+    });
+    connect(engine_, &EngineBridge::run_finished, this, [this](const QString& st, int, const QString& csv) {
+        const QString kind = engine_->model_status().artifact_kind == "fixture-untrained" ? " (fixture model)" : "";
+        if (st == "completed") {
+            status_bar_->set_status(QString("Analysis complete%1: %2 results in %3")
+                                        .arg(kind).arg(engine_->committed_rows()).arg(csv));
+        } else if (st == "canceled") {
+            status_bar_->set_status(QString("Analysis canceled: %1 committed results kept as partial output in %2")
+                                        .arg(engine_->committed_rows()).arg(csv));
+        } else if (st != "rejected") {
+            status_bar_->set_status(QString("Analysis %1; committed results kept in %2").arg(st, engine_->run_dir()));
+        }
+    });
+}
+
+void MainWindow::append_engine_rows() {
+    const QList<QJsonObject> fresh = engine_->take_new_rows();
+    if (fresh.isEmpty()) return;
+    const bool first = state_.rows().empty();
+    auto& rows = state_.mutable_rows();
+    rows.reserve(rows.size() + static_cast<size_t>(fresh.size()));
+    for (const QJsonObject& obj : fresh) rows.push_back(row_from_engine_json(obj));
+    if (first) {
+        state_.set_rows(std::move(rows), state_.source_path());  // picks the first call, emits signals
+    }
+    update_all_views();
+}
+
+void MainWindow::ingest_paths(const QStringList& paths) {
+    QStringList csvs;
+    QStringList audio_or_dirs;
+    int skipped = 0;
+    for (const QString& p : paths) {
+        QFileInfo fi(p);
+        if (fi.isDir() || EngineBridge::is_audio_path(p)) {
+            audio_or_dirs << p;
+        } else if (fi.suffix().compare("csv", Qt::CaseInsensitive) == 0) {
+            csvs << p;
+        } else {
+            ++skipped;
+        }
+    }
+    if (!csvs.isEmpty()) open_file(csvs.first());
+    if (audio_or_dirs.isEmpty()) {
+        if (skipped > 0 && csvs.isEmpty()) status_bar_->set_status(QString("Skipped %1 unsupported files").arg(skipped));
+        return;
+    }
+    const ModelStatus st = engine_->model_status();
+    if (!st.available) {
+        status_bar_->set_status(QString("Model unavailable: %1. CSV viewing still works.").arg(st.reason));
+        return;
+    }
+    status_bar_->set_status("Discovering audio files…");
+    auto* watcher = new QFutureWatcher<QStringList>(this);
+    connect(watcher, &QFutureWatcher<QStringList>::finished, this, [this, watcher, skipped]() {
+        start_audio_analysis(watcher->result(), skipped);
+        watcher->deleteLater();
+    });
+    watcher->setFuture(QtConcurrent::run([audio_or_dirs]() {
+        QStringList files;
+        for (const QString& p : audio_or_dirs) {
+            if (!QFileInfo(p).isDir()) {
+                files << p;
+                continue;
+            }
+            QDirIterator it(p, QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                const QString f = it.next();
+                if (EngineBridge::is_audio_path(f)) files << f;
+            }
+        }
+        files.sort();
+        return files;
+    }));
+}
+
+void MainWindow::start_audio_analysis(const QStringList& audio_files, int skipped) {
+    if (audio_files.isEmpty()) {
+        status_bar_->set_status("No supported audio files found");
+        return;
+    }
+    if (engine_->running()) {
+        status_bar_->set_status("An analysis is already running; cancel it before starting another");
+        return;
+    }
+    engine_->analyze(audio_files);
+    if (skipped > 0) status_bar_->set_status(status_bar_->status() + QString(" (%1 unsupported files skipped)").arg(skipped));
 }
 
 void MainWindow::open_file(const QString& path) {
@@ -347,23 +459,26 @@ void MainWindow::export_report() {
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
-    if (event->mimeData()->hasUrls()) {
-        const auto& urls = event->mimeData()->urls();
-        if (!urls.isEmpty() && urls.first().toLocalFile().endsWith(".csv", Qt::CaseInsensitive)) {
+    if (!event->mimeData()->hasUrls()) return;
+    for (const QUrl& url : event->mimeData()->urls()) {
+        const QString path = url.toLocalFile();
+        QFileInfo fi(path);
+        if (fi.isDir() || EngineBridge::is_audio_path(path) ||
+            fi.suffix().compare("csv", Qt::CaseInsensitive) == 0) {
             event->acceptProposedAction();
+            return;
         }
     }
 }
 
 void MainWindow::dropEvent(QDropEvent* event) {
-    const auto& urls = event->mimeData()->urls();
-    if (!urls.isEmpty()) {
-        QString path = urls.first().toLocalFile();
-        if (path.endsWith(".csv", Qt::CaseInsensitive)) {
-            event->acceptProposedAction();
-            open_file(path);
-        }
+    QStringList paths;
+    for (const QUrl& url : event->mimeData()->urls()) {
+        if (url.isLocalFile()) paths << url.toLocalFile();
     }
+    if (paths.isEmpty()) return;
+    event->acceptProposedAction();
+    ingest_paths(paths);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

@@ -81,6 +81,7 @@ target_compile_features(whale-mix-cli PRIVATE cxx_std_20)
 # GUI executable
 set(GUI_LIB_SOURCES
   gui/MainWindow.cpp
+  gui/EngineBridge.cpp
   gui/AppState.cpp
   gui/Fonts.cpp
   gui/widgets/Chip.cpp
@@ -199,6 +200,7 @@ add_test(NAME cli_golden_test
 # GUI smoke tests
 qt_add_executable(whalemix_gui_tests
   tests/gui_smoke_tests.cpp
+  tests/engine_bridge_tests.cpp
   ${GUI_LIB_SOURCES}
   ${GUI_RESOURCES}
 )
@@ -224,9 +226,41 @@ if(WIN32)
   target_link_libraries(whalemix_gui_tests PRIVATE dwmapi)
 endif()
 add_test(NAME whalemix_gui_tests COMMAND whalemix_gui_tests)
-set_tests_properties(whalemix_gui_tests PROPERTIES
-  ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-)
+# Optional fixture-engine checks: point these at a locally built worker and an untrained fixture
+# bundle exported outside Git (python -m whalemix_training export --fixture). Empty = skipped.
+set(WHALEMIX_TEST_ENGINE "" CACHE FILEPATH "whale-mix-engine binary for fixture GUI tests")
+set(WHALEMIX_TEST_FIXTURE_BUNDLE "" CACHE PATH "untrained fixture bundle for engine tests")
+set(WHALEMIX_TEST_PARITY_WAV "" CACHE FILEPATH "WAV whose <bundle>-parity-reference.json was exported with the fixture")
+# CI turns this on so fixture-dependent tests fail instead of skipping when a path is missing.
+option(WHALEMIX_REQUIRE_FIXTURE_TESTS "Fail (not skip) fixture-dependent GUI and engine tests" OFF)
+set(_fixture_env "")
+if(WHALEMIX_REQUIRE_FIXTURE_TESTS)
+  list(APPEND _fixture_env "WHALEMIX_REQUIRE_FIXTURE=1")
+endif()
+set(_gui_test_env "QT_QPA_PLATFORM=offscreen" ${_fixture_env})
+if(WHALEMIX_TEST_ENGINE AND WHALEMIX_TEST_FIXTURE_BUNDLE)
+  list(APPEND _gui_test_env "WHALEMIX_ENGINE=${WHALEMIX_TEST_ENGINE}"
+                            "WHALEMIX_FIXTURE_BUNDLE=${WHALEMIX_TEST_FIXTURE_BUNDLE}")
+endif()
+set_tests_properties(whalemix_gui_tests PROPERTIES ENVIRONMENT "${_gui_test_env}")
+
+# Optional Rust worker tests through CTest.
+option(WHALEMIX_ENGINE_TESTS "Run cargo test for app/engine from CTest" OFF)
+if(WHALEMIX_ENGINE_TESTS)
+  find_program(CARGO_EXECUTABLE cargo REQUIRED)
+  add_test(NAME engine_cargo_tests
+    COMMAND ${CARGO_EXECUTABLE} test --release --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/engine/Cargo.toml)
+  set(_engine_test_env ${_fixture_env})
+  if(WHALEMIX_TEST_FIXTURE_BUNDLE)
+    list(APPEND _engine_test_env "WHALEMIX_FIXTURE_BUNDLE=${WHALEMIX_TEST_FIXTURE_BUNDLE}")
+  endif()
+  if(WHALEMIX_TEST_PARITY_WAV)
+    list(APPEND _engine_test_env "WHALEMIX_PARITY_WAV=${WHALEMIX_TEST_PARITY_WAV}")
+  endif()
+  if(_engine_test_env)
+    set_tests_properties(engine_cargo_tests PROPERTIES ENVIRONMENT "${_engine_test_env}")
+  endif()
+endif()
 
 # Installation for portable zip
 install(TARGETS whale-mix whale-mix-cli

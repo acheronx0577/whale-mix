@@ -1,0 +1,14 @@
+# GPU training pins (not installed on the build box or the owner's PC). Same versions as
+# requirements-lock.txt except torch/torchvision come from the CUDA 13.2 index:
+#   pip install -r requirements-gpu-cu132.txt --index-url https://download.pytorch.org/whl/cu132 \
+#       --extra-index-url https://pypi.org/simple
+# Wheel availability (linux x86_64 and win_amd64, Python 3.13) was checked on download.pytorch.org on
+# 2026-11-25; no GPU run has used these pins yet. See GPU-Setup.md.
+torch==2.15.0+cu132
+torchvision==0.29.2+cu132
+numpy==2.5.4
+scipy==1.18.1
+soundfile==0.14.0
+onnx==1.23.2
+onnxruntime==1.32.0
+onnxscript==0.7.2
