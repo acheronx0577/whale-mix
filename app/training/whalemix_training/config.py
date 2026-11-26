@@ -37,6 +37,9 @@ DEFAULTS: dict[str, Any] = {
         # Group keys (e.g. "deployment:<name>") whose recordings form the sealed test split, such as a
         # publisher's evaluation set. With a test fraction of 0 no other group is sent to test.
         "sealed_test_groups": [],
+        # Group keys whose recordings are pinned to the validation split (whole merged groups, recorded in the
+        # manifest), e.g. to give validation a second recorder. A key cannot be both sealed and pinned.
+        "pinned_validation_groups": [],
     },
     "preprocessing": {
         "sample_rate": 4000,

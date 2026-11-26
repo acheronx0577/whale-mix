@@ -55,3 +55,53 @@ def test_unknown_sealed_group_is_refused(corpus, capsys):
     assert main(["split", "--config", str(corpus["config"])]) == 2
     assert "no-such-deployment" in capsys.readouterr().err
     assert not (corpus["out"] / "split-manifest.json").exists()
+
+
+def _split_dirs(manifest: dict, catalog: list[dict], split: str) -> set[str]:
+    by_id = {e["file_id"]: e["relative_path"].split("/")[0] for e in catalog}
+    return {by_id[f] for f, a in manifest["assignments"].items() if a["split"] == split}
+
+
+def test_pinned_validation_group_goes_whole_to_validation(corpus):
+    _small_config(corpus)
+    _prepare_cli(corpus)
+    (corpus["out"] / "split-manifest.json").unlink()
+    _set_split(corpus, fractions={"train": 1.0, "validation": 0.0, "test": 0.0}, sealed_test_groups=["deployment:dep-d"])
+    assert main(["split", "--config", str(corpus["config"])]) == 0
+    base = _manifest(corpus)
+    cat = _catalog(corpus)
+    assert _split_dirs(base, cat, "validation") == set()
+    pick = sorted(_split_dirs(base, cat, "train"))[0]
+    (corpus["out"] / "split-manifest.json").unlink()
+    _set_split(corpus, pinned_validation_groups=[f"deployment:{pick}"])
+    assert main(["split", "--config", str(corpus["config"])]) == 0
+    manifest = _manifest(corpus)
+    by_id = {e["file_id"]: e["relative_path"].split("/")[0] for e in cat}
+    merged = {a["group"] for f, a in manifest["assignments"].items() if by_id[f] == pick}
+    expected = {by_id[f] for f, a in manifest["assignments"].items() if a["group"] in merged}
+    assert pick in expected
+    assert _split_dirs(manifest, cat, "validation") == expected  # the whole merged group, nothing else
+    assert not expected & _split_dirs(manifest, cat, "train")
+    assert _split_dirs(manifest, cat, "test") == {"dep-d"}
+    assert manifest["pinned_validation_groups"] == [f"deployment:{pick}"]
+    assert manifest["leakage_problems"] == []
+
+
+def test_pinned_and_sealed_overlap_is_refused(corpus, capsys):
+    _small_config(corpus)
+    _prepare_cli(corpus)
+    (corpus["out"] / "split-manifest.json").unlink()
+    _set_split(corpus, sealed_test_groups=["deployment:dep-d"], pinned_validation_groups=["deployment:dep-d"])
+    assert main(["split", "--config", str(corpus["config"])]) == 2
+    assert "overlaps" in capsys.readouterr().err
+
+
+def test_pinned_group_frozen_elsewhere_is_refused(corpus, capsys):
+    _small_config(corpus)
+    _prepare_cli(corpus)
+    (corpus["out"] / "split-manifest.json").unlink()
+    _set_split(corpus, fractions={"train": 1.0, "validation": 0.0, "test": 0.0})
+    assert main(["split", "--config", str(corpus["config"])]) == 0
+    _set_split(corpus, pinned_validation_groups=["deployment:dep-a"])
+    assert main(["split", "--config", str(corpus["config"])]) == 2
+    assert "new output_dir" in capsys.readouterr().err

@@ -156,6 +156,7 @@ def assign_splits(
     fractions: dict[str, float],
     protected_test_groups: frozenset[str] = frozenset(),
     previous: dict[str, Any] | None = None,
+    protected_validation_groups: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     if abs(sum(fractions[s] for s in SPLITS) - 1.0) > 1e-6:
         raise ValueError("split fractions must sum to 1")
@@ -173,6 +174,8 @@ def assign_splits(
             choice = frozen[group]
         elif group in protected_test_groups:
             choice = "test"
+        elif group in protected_validation_groups:
+            choice = "validation"
         else:
             choice = min(SPLITS, key=lambda s: (filled[s] / total - fractions[s], SPLITS.index(s)))
         group_split[group] = choice
