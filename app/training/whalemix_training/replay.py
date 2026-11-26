@@ -245,6 +245,129 @@ def _derived_seed(seed: int, stream: str) -> int:
 
 
 @dataclass
+class GroupedPositives:
+    """Positive stream stratified by group (e.g. recorder): each positive slot first picks a group, then
+    takes that group's next window from its own seeded `DeterministicSampler`.
+
+    Group g gets weight n_g ** temperature (n_g = its positive windows), normalised: temperature 1 is the
+    plain proportional draw, 0 is equal weight per group, 0.5 is square-root tempering. The group of the
+    d-th positive draw is a pure function of (seed, d), so the saved draw counter plus each group's
+    cursor fully determine the rest of the sequence and a resume is exact."""
+
+    groups: dict[str, DeterministicSampler]
+    temperature: float
+    seed: int
+    drawn: int = 0
+    drawn_by_group: dict[str, int] = field(default_factory=dict)
+    _orders: dict[tuple[str, int], list[str]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    @classmethod
+    def build(cls, group_of: dict[str, str], seed: int, temperature: float) -> GroupedPositives:
+        if not 0.0 <= temperature <= 1.0:
+            raise ValueError("positive group temperature must be between 0 and 1")
+        members: dict[str, list[str]] = {}
+        for eid, g in group_of.items():
+            members.setdefault(str(g), []).append(eid)
+        if not members:
+            raise ValueError("grouped positives need at least one positive window")
+        groups = {
+            g: DeterministicSampler(sorted(ids), _derived_seed(seed, f"positive:{g}"))
+            for g, ids in sorted(members.items())
+        }
+        return cls(groups, float(temperature), int(seed), drawn_by_group={g: 0 for g in groups})
+
+    @property
+    def example_ids(self) -> list[str]:
+        return [i for s in self.groups.values() for i in s.example_ids]
+
+    @property
+    def epoch(self) -> int:
+        """Completed passes over the largest group (smaller groups repeat more often by design)."""
+        return max(self.groups.values(), key=lambda s: len(s.example_ids)).epoch
+
+    def weights(self) -> dict[str, float]:
+        raw = {g: len(s.example_ids) ** self.temperature for g, s in self.groups.items()}
+        total = sum(raw.values())
+        return {g: w / total for g, w in raw.items()}
+
+    def group_of_draw(self, d: int) -> str:
+        digest = hashlib.sha256(f"{self.seed}:positive-group:{d}".encode()).digest()[:8]
+        u = int.from_bytes(digest, "little") / 2.0**64
+        acc = 0.0
+        names = list(self.groups)
+        for g, w in self.weights().items():
+            acc += w
+            if u < acc:
+                return g
+        return names[-1]
+
+    def _order(self, g: str, epoch: int) -> list[str]:
+        key = (g, epoch)
+        if key not in self._orders:
+            if len(self._orders) > 4 * len(self.groups) + 8:
+                self._orders.clear()
+            s = self.groups[g]
+            self._orders[key] = DeterministicSampler(s.example_ids, s.seed, epoch).order()
+        return self._orders[key]
+
+    def peek(self, n: int) -> list[str]:
+        pos = {g: (s.epoch, s.cursor) for g, s in self.groups.items()}
+        out = []
+        for j in range(n):
+            g = self.group_of_draw(self.drawn + j)
+            epoch, cursor = pos[g]
+            order = self._order(g, epoch)
+            out.append(order[cursor])
+            cursor += 1
+            pos[g] = (epoch + 1, 0) if cursor >= len(order) else (epoch, cursor)
+        return out
+
+    def consume(self, n: int) -> None:
+        for j in range(n):
+            g = self.group_of_draw(self.drawn + j)
+            self.groups[g].mark_consumed(1)
+            self.drawn_by_group[g] += 1
+        self.drawn += n
+
+    def stats(self) -> dict[str, Any]:
+        w = self.weights()
+        return {
+            g: {
+                "available": len(s.example_ids),
+                "weight": round(w[g], 6),
+                "drawn": self.drawn_by_group[g],
+                "epochs": s.epoch,
+            }
+            for g, s in self.groups.items()
+        }
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "grouped",
+            "temperature": self.temperature,
+            "seed": self.seed,
+            "drawn": self.drawn,
+            "drawn_by_group": dict(self.drawn_by_group),
+            "groups": {g: s.state_dict() for g, s in self.groups.items()},
+        }
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        if state.get("kind") != "grouped":
+            raise ValueError("sampler state has ungrouped positives")
+        if float(state["temperature"]) != self.temperature or int(state["seed"]) != self.seed:
+            raise ValueError("sampler state has a different positive grouping")
+        if sorted(state["groups"]) != sorted(self.groups):
+            raise ValueError("sampler state has different positive groups")
+        for g, s in self.groups.items():
+            s.load_state(state["groups"][g])
+        self.drawn = int(state["drawn"])
+        self.drawn_by_group = {g: int(v) for g, v in state["drawn_by_group"].items()}
+        self._orders.clear()
+
+
+@dataclass
 class BalancedSampler:
     """Seeded positive oversampling: every micro-batch of n holds exactly round(n * positive_fraction)
     positive windows (at least one, at most n - 1) and the rest negatives.
@@ -256,9 +379,13 @@ class BalancedSampler:
     Every pool is an independent `DeterministicSampler` stream that wraps into its next epoch inside a
     batch, so small pools are reused in a fresh seeded order each pass. The full state (cursors, epochs and
     draw counters) goes into the checkpoint, so a resume continues the exact sequence. Without confusers the
-    sequence and the saved state are exactly those of the positive-only sampler."""
+    sequence and the saved state are exactly those of the positive-only sampler.
 
-    positives: DeterministicSampler
+    Optional positive grouping (`GroupedPositives`) stratifies the positive slots by a group such as the
+    recorder, with tempered weights, so a recorder with few calls is not drowned out by one with many. Off
+    by default; without it the sequence and saved state are unchanged."""
+
+    positives: DeterministicSampler | GroupedPositives
     negatives: DeterministicSampler
     positive_fraction: float
     drawn: dict[str, int] = field(default_factory=lambda: {"positive": 0, "negative": 0})
@@ -281,6 +408,8 @@ class BalancedSampler:
         positive_fraction: float,
         confuser_ids: list[str] | None = None,
         confuser_fraction: float = 0.0,
+        positive_groups: dict[str, str] | None = None,
+        group_temperature: float = 1.0,
     ) -> BalancedSampler:
         if not 0.0 < positive_fraction < 1.0:
             raise ValueError("positive_fraction must be between 0 and 1 (exclusive)")
@@ -297,8 +426,18 @@ class BalancedSampler:
             confusers = DeterministicSampler(sorted(pool), _derived_seed(seed, "confuser"))
         if not positive_ids or not negative_ids:
             raise ValueError("balanced sampling needs at least one positive and one negative window")
+        positives: DeterministicSampler | GroupedPositives
+        if positive_groups is not None:
+            missing = [i for i in positive_ids if i not in positive_groups]
+            if missing:
+                raise ValueError(f"{len(missing)} positive windows have no group")
+            positives = GroupedPositives.build(
+                {i: positive_groups[i] for i in positive_ids}, seed, group_temperature
+            )
+        else:
+            positives = DeterministicSampler(sorted(positive_ids), _derived_seed(seed, "positive"))
         sampler = cls(
-            DeterministicSampler(sorted(positive_ids), _derived_seed(seed, "positive")),
+            positives,
             DeterministicSampler(sorted(negative_ids), _derived_seed(seed, "negative")),
             float(positive_fraction),
             confusers=confusers,
@@ -334,7 +473,9 @@ class BalancedSampler:
             self._orders[key] = DeterministicSampler(s.example_ids, s.seed, epoch).order()
         return self._orders[key]
 
-    def _peek(self, name: str, s: DeterministicSampler, n: int) -> list[str]:
+    def _peek(self, name: str, s: DeterministicSampler | GroupedPositives, n: int) -> list[str]:
+        if isinstance(s, GroupedPositives):
+            return s.peek(n)
         out: list[str] = []
         epoch, cursor = s.epoch, s.cursor
         while len(out) < n:
@@ -346,8 +487,8 @@ class BalancedSampler:
                 epoch, cursor = epoch + 1, 0
         return out
 
-    def _streams(self) -> list[tuple[str, DeterministicSampler]]:
-        streams = [("positive", self.positives)]
+    def _streams(self) -> list[tuple[str, DeterministicSampler | GroupedPositives]]:
+        streams: list[tuple[str, DeterministicSampler | GroupedPositives]] = [("positive", self.positives)]
         if self.confusers is not None:
             streams.append(("confuser", self.confusers))
         return [*streams, ("negative", self.negatives)]
@@ -363,6 +504,9 @@ class BalancedSampler:
     def consume(self) -> None:
         for (name, s), count in zip(self._streams(), self._plan, strict=True):
             self.drawn[name] += count
+            if isinstance(s, GroupedPositives):
+                s.consume(count)
+                continue
             while count > 0:
                 step = min(count, len(s.example_ids) - s.cursor)
                 s.mark_consumed(step)
@@ -380,6 +524,11 @@ class BalancedSampler:
             "positive_share_drawn": None if total == 0 else self.drawn["positive"] / total,
             "positive_epochs": self.positives.epoch,
         }
+        if isinstance(self.positives, GroupedPositives):
+            out["positive_grouping"] = {
+                "temperature": self.positives.temperature,
+                "groups": self.positives.stats(),
+            }
         if self.confusers is not None:
             out.update(
                 {
@@ -411,6 +560,9 @@ class BalancedSampler:
             raise ValueError("sampler state has a different positive_fraction")
         if float(state.get("confuser_fraction", 0.0)) != self.confuser_fraction:
             raise ValueError("sampler state has a different confuser_fraction")
+        grouped_state = state["positives"].get("kind") == "grouped"
+        if grouped_state != isinstance(self.positives, GroupedPositives):
+            raise ValueError("sampler state has a different positive grouping")
         self.positives.load_state(state["positives"])
         self.negatives.load_state(state["negatives"])
         if self.confusers is not None:

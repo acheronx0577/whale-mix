@@ -80,6 +80,10 @@ DEFAULTS: dict[str, Any] = {
         # reviewed `absent` rows that mark confuser intervals, e.g. another call type) and
         # "confuser_min_overlap" (default 0.5: a negative training window is a confuser when it overlaps
         # such an interval by at least that share of the shorter of the two).
+        # Optional recorder-balanced positives (off unless set, also not defaulted here):
+        # "positive_group_by" (a catalog metadata field such as "recorder_id"; positive slots pick a group
+        # with weight n_g ** temperature, then that group's next window) and "positive_group_temperature"
+        # (default 1.0 = proportional; 0.5 = square root; 0.0 = equal per group).
         "balance": {"positive_fraction": 0.25, "labels": None},
         "max_windows": 2000000,
         "device": "cpu",

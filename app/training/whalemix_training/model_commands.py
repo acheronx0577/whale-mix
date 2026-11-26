@@ -245,6 +245,10 @@ def _train_source(
         confusers = _confuser_windows(
             prep, set(negatives), prefixes, labels, float(balance.get("confuser_min_overlap", 0.5))
         )
+    group_by = balance.get("positive_group_by")
+    positive_groups = None
+    if group_by:
+        positive_groups = _positive_groups(prep, positives, str(group_by))
     try:
         return BalancedSampler.build(
             positives,
@@ -253,9 +257,31 @@ def _train_source(
             float(balance.get("positive_fraction", 0.25)),
             confuser_ids=confusers,
             confuser_fraction=confuser_fraction,
+            positive_groups=positive_groups,
+            group_temperature=float(balance.get("positive_group_temperature", 1.0)),
         )
     except ValueError as exc:
         raise SetupRequired(f"balanced sampling: {exc}") from exc
+
+
+def _positive_groups(prep: dict[str, Any], positives: list[str], field_name: str) -> dict[str, str]:
+    """Group of each positive training window: the catalog metadata field `field_name` (e.g. recorder_id)
+    of the window's file. Every positive window needs a value, so nothing is grouped by accident."""
+    by_file = {e["file_id"]: e for e in prep["catalog"]}
+    file_of = {w["example_id"]: w["file_id"] for w in prep["windows"]}
+    groups, missing = {}, set()
+    for eid in positives:
+        value = by_file.get(file_of[eid], {}).get(field_name)
+        if value in (None, ""):
+            missing.add(file_of[eid])
+        else:
+            groups[eid] = str(value)
+    if missing:
+        raise SetupRequired(
+            f"training.balance.positive_group_by {field_name!r}: "
+            f"{len(missing)} files with positives have no value"
+        )
+    return groups
 
 
 def _confuser_windows(
