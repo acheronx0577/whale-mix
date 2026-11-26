@@ -34,6 +34,9 @@ DEFAULTS: dict[str, Any] = {
         "seed": 20261125,
         "fractions": {"train": 0.70, "validation": 0.15, "test": 0.15},
         "freeze_heldout": True,
+        # Group keys (e.g. "deployment:<name>") whose recordings form the sealed test split, such as a
+        # publisher's evaluation set. With a test fraction of 0 no other group is sent to test.
+        "sealed_test_groups": [],
     },
     "preprocessing": {
         "sample_rate": 4000,

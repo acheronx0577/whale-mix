@@ -86,9 +86,15 @@ def cmd_split(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     previous = None
     if manifest_path.exists() and cfg["split"].get("freeze_heldout", True):
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+    sealed = sorted(str(g) for g in cfg["split"].get("sealed_test_groups") or [])
+    protected = _sealed_groups(catalog, sealed)
     try:
         manifest = splits.assign_splits(
-            catalog, int(cfg["split"]["seed"]), cfg["split"]["fractions"], previous=previous
+            catalog,
+            int(cfg["split"]["seed"]),
+            cfg["split"]["fractions"],
+            protected_test_groups=protected,
+            previous=previous,
         )
     except splits.SplitLockError as exc:
         _print({"status": "HELDOUT_LOCK_FAILED", "problems": exc.problems})
@@ -102,6 +108,7 @@ def cmd_split(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     manifest.update(binding)
     manifest["leakage_problems"] = problems
     manifest["heldout_gaps"] = gaps
+    manifest["sealed_test_groups"] = sealed
     atomic_write_json(out / "split-manifest.json", manifest)
     _print(
         {
@@ -112,6 +119,21 @@ def cmd_split(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         }
     )
     return 1 if problems else 0
+
+
+def _sealed_groups(catalog: list[dict[str, Any]], sealed: list[str]) -> frozenset[str]:
+    """Merged split groups containing any file whose group key is listed as sealed test data.
+
+    Raises ConfigError when a listed key matches no readable file, so a typo cannot silently unseal data."""
+    if not sealed:
+        return frozenset()
+    readable = [e for e in catalog if e.get("status") == "ok"]
+    merged = splits.build_groups(readable)
+    keys = {e["file_id"]: splits.group_key(e) for e in readable}
+    unknown = sorted(set(sealed) - set(keys.values()))
+    if unknown:
+        raise ConfigError(f"split.sealed_test_groups matches no readable recordings: {', '.join(unknown)}")
+    return frozenset(merged[f] for f, k in keys.items() if k in sealed)
 
 
 def data_binding(out: Path, cfg: dict[str, Any]) -> dict[str, Any]:
