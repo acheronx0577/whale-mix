@@ -66,7 +66,11 @@ def test_pinned_validation_group_goes_whole_to_validation(corpus):
     _small_config(corpus)
     _prepare_cli(corpus)
     (corpus["out"] / "split-manifest.json").unlink()
-    _set_split(corpus, fractions={"train": 1.0, "validation": 0.0, "test": 0.0}, sealed_test_groups=["deployment:dep-d"])
+    _set_split(
+        corpus,
+        fractions={"train": 1.0, "validation": 0.0, "test": 0.0},
+        sealed_test_groups=["deployment:dep-d"],
+    )
     assert main(["split", "--config", str(corpus["config"])]) == 0
     base = _manifest(corpus)
     cat = _catalog(corpus)

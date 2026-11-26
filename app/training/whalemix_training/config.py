@@ -71,7 +71,11 @@ DEFAULTS: dict[str, Any] = {
         "seed": 1234,
         "compute_threads": 2,
         "loader_workers": 0,
+        # "none" (plain seeded shuffle) or "balanced" (seeded positive oversampling, train stage only).
         "imbalance": "none",
+        # Used only with imbalance "balanced": share of each micro-batch drawn from positive windows, and
+        # the labels whose reviewed `present` state makes a window positive (null = all whale targets).
+        "balance": {"positive_fraction": 0.25, "labels": None},
         "max_windows": 2000000,
         "device": "cpu",
         "precision": "fp32",

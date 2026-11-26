@@ -23,6 +23,7 @@ from whalemix_training.labels import LabelMap, default_label_map
 from whalemix_training.losses import masked_bce
 from whalemix_training.model import build_model, describe
 from whalemix_training.replay import (
+    BalancedSampler,
     DeterministicSampler,
     ReplayAdmissionError,
     ReplayMixer,
@@ -217,6 +218,32 @@ def _replay_source(
     return ReplayMixer(sampler, replay, float(cfg["replay"]["new_fraction"])), new_ids
 
 
+def _train_source(
+    training: dict[str, Any], prep: dict[str, Any], label_map: LabelMap, train_ids: list[str]
+) -> DeterministicSampler | BalancedSampler:
+    """Plain seeded shuffle by default; `imbalance: balanced` oversamples reviewed-positive windows."""
+    mode = training.get("imbalance", "none")
+    if mode == "none":
+        return DeterministicSampler(train_ids, int(training["seed"]))
+    if mode != "balanced":
+        raise SetupRequired(f"training.imbalance must be 'none' or 'balanced', not {mode!r}")
+    balance = training.get("balance") or {}
+    labels = list(balance.get("labels") or label_map.whale_targets)
+    unknown = [lbl for lbl in labels if lbl not in label_map.outputs]
+    if unknown:
+        raise SetupRequired(f"training.balance.labels has unknown labels: {', '.join(unknown)}")
+    states = {w["example_id"]: w["states"] for w in prep["windows"]}
+    wanted = set(train_ids)
+    positives = sorted(i for i in wanted if any(states[i].get(lbl) == "present" for lbl in labels))
+    negatives = sorted(wanted - set(positives))
+    try:
+        return BalancedSampler.build(
+            positives, negatives, int(training["seed"]), float(balance.get("positive_fraction", 0.25))
+        )
+    except ValueError as exc:
+        raise SetupRequired(f"balanced sampling: {exc}") from exc
+
+
 def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: dict[str, Any] | None) -> int:
     training = cfg["training"]
     info: DeviceInfo = resolve_device(training)
@@ -235,9 +262,13 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
     train_ids = sorted(w["example_id"] for w in prep["windows"] if w["split"] == "train" and w["reviewed"])
     source: DeterministicSampler | ReplayMixer
     if stage == "finetune":
+        if training.get("imbalance", "none") != "none":
+            raise SetupRequired(
+                "training.imbalance 'balanced' applies to train only; fine-tune uses replay mixing"
+            )
         source, new_ids = _replay_source(cfg, prep, train_ids)
     else:
-        source, new_ids = DeterministicSampler(train_ids, int(training["seed"])), train_ids
+        source, new_ids = _train_source(training, prep, label_map, train_ids), train_ids
     start_update = 0
     transition = None
     if resume is not None:
@@ -305,6 +336,7 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         "preflight": preflight(prep),
         "budget": vars(budget),
         "imbalance_handling": training["imbalance"],
+        "sampler": source.stats() if isinstance(source, BalancedSampler) else {"kind": "plain"},
         "device": info.to_json(),
         "parent": lineage_parent,
         "resumed_from": None

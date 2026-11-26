@@ -91,7 +91,9 @@ def cmd_split(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     pinned = sorted(str(g) for g in cfg["split"].get("pinned_validation_groups") or [])
     pinned_groups = _sealed_groups(catalog, pinned, "split.pinned_validation_groups")
     if pinned_groups & protected:
-        raise ConfigError("split.pinned_validation_groups overlaps split.sealed_test_groups after merging groups")
+        raise ConfigError(
+            "split.pinned_validation_groups overlaps split.sealed_test_groups after merging groups"
+        )
     try:
         manifest = splits.assign_splits(
             catalog,

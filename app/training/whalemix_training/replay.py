@@ -238,3 +238,122 @@ class DeterministicSampler:
         if state["ids_hash"] != self.ids_hash:
             raise ValueError("sampler state belongs to a different example manifest")
         self.seed, self.epoch, self.cursor = state["seed"], state["epoch"], state["cursor"]
+
+
+def _derived_seed(seed: int, stream: str) -> int:
+    return int.from_bytes(hashlib.sha256(f"{seed}:{stream}".encode()).digest()[:8], "little") % (2**63)
+
+
+@dataclass
+class BalancedSampler:
+    """Seeded positive oversampling: every micro-batch of n holds exactly round(n * positive_fraction)
+    positive windows (at least one, at most n - 1) and the rest negatives.
+
+    Positives and negatives are two independent `DeterministicSampler` streams that wrap into their next
+    epoch inside a batch, so the small positive set is reused in a fresh seeded order each pass. The full
+    state (both cursors and epochs plus the draw counters) goes into the checkpoint, so a resume continues
+    the exact sequence."""
+
+    positives: DeterministicSampler
+    negatives: DeterministicSampler
+    positive_fraction: float
+    drawn: dict[str, int] = field(default_factory=lambda: {"positive": 0, "negative": 0})
+    _last: list[str] = field(default_factory=list, init=False, repr=False, compare=False)
+    _plan: tuple[int, int] = field(default=(0, 0), init=False, repr=False, compare=False)
+    _orders: dict[tuple[str, int], list[str]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    KIND = "balanced"
+
+    @classmethod
+    def build(
+        cls, positive_ids: list[str], negative_ids: list[str], seed: int, positive_fraction: float
+    ) -> BalancedSampler:
+        if not 0.0 < positive_fraction < 1.0:
+            raise ValueError("positive_fraction must be between 0 and 1 (exclusive)")
+        if not positive_ids or not negative_ids:
+            raise ValueError("balanced sampling needs at least one positive and one negative window")
+        return cls(
+            DeterministicSampler(sorted(positive_ids), _derived_seed(seed, "positive")),
+            DeterministicSampler(sorted(negative_ids), _derived_seed(seed, "negative")),
+            float(positive_fraction),
+        )
+
+    @property
+    def epoch(self) -> int:
+        """Passes over the negatives (the large stream); positives repeat more often by design."""
+        return self.negatives.epoch
+
+    def positives_per_batch(self, n: int) -> int:
+        if n < 2:
+            raise ValueError("balanced sampling needs micro_batch >= 2")
+        return min(n - 1, max(1, round(n * self.positive_fraction)))
+
+    def _order(self, name: str, s: DeterministicSampler, epoch: int) -> list[str]:
+        key = (name, epoch)
+        if key not in self._orders:
+            if len(self._orders) > 8:
+                self._orders.clear()
+            self._orders[key] = DeterministicSampler(s.example_ids, s.seed, epoch).order()
+        return self._orders[key]
+
+    def _peek(self, name: str, s: DeterministicSampler, n: int) -> list[str]:
+        out: list[str] = []
+        epoch, cursor = s.epoch, s.cursor
+        while len(out) < n:
+            order = self._order(name, s, epoch)
+            take = order[cursor : cursor + (n - len(out))]
+            out.extend(take)
+            cursor += len(take)
+            if cursor >= len(order):
+                epoch, cursor = epoch + 1, 0
+        return out
+
+    def draw(self, n: int) -> list[str]:
+        k = self.positives_per_batch(n)
+        self._plan = (k, n - k)
+        self._last = self._peek("positive", self.positives, k) + self._peek("negative", self.negatives, n - k)
+        return self._last
+
+    def consume(self) -> None:
+        k, m = self._plan
+        for s, count in ((self.positives, k), (self.negatives, m)):
+            while count > 0:
+                step = min(count, len(s.example_ids) - s.cursor)
+                s.mark_consumed(step)
+                count -= step
+        self.drawn["positive"] += k
+        self.drawn["negative"] += m
+        self._last, self._plan = [], (0, 0)
+
+    def stats(self) -> dict[str, Any]:
+        total = self.drawn["positive"] + self.drawn["negative"]
+        return {
+            "kind": self.KIND,
+            "positive_fraction": self.positive_fraction,
+            "positives_available": len(self.positives.example_ids),
+            "negatives_available": len(self.negatives.example_ids),
+            "drawn": dict(self.drawn),
+            "positive_share_drawn": None if total == 0 else self.drawn["positive"] / total,
+            "positive_epochs": self.positives.epoch,
+        }
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.KIND,
+            "positive_fraction": self.positive_fraction,
+            "positives": self.positives.state_dict(),
+            "negatives": self.negatives.state_dict(),
+            "drawn": dict(self.drawn),
+        }
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        if state.get("kind") != self.KIND:
+            raise ValueError("sampler state is not from a balanced sampler")
+        if float(state["positive_fraction"]) != self.positive_fraction:
+            raise ValueError("sampler state has a different positive_fraction")
+        self.positives.load_state(state["positives"])
+        self.negatives.load_state(state["negatives"])
+        self.drawn = {k: int(v) for k, v in state["drawn"].items()}
+        self._orders.clear()
