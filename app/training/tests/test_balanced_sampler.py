@@ -128,3 +128,116 @@ def test_cli_rejects_an_unknown_imbalance_mode(corpus, capsys):
     _set_training(corpus, max_updates=0, imbalance="weighted")
     assert _train(corpus) == 1
     assert "imbalance" in capsys.readouterr().out
+
+
+CONF = [f"c{i}" for i in range(3)]
+
+
+def test_confusers_get_fixed_slots_and_leave_the_plain_negative_pool():
+    s = BalancedSampler.build(
+        POS, NEG + CONF, seed=5, positive_fraction=0.25, confuser_ids=CONF, confuser_fraction=0.25
+    )
+    assert s.stats()["negatives_available"] == len(NEG) and s.stats()["confusers_available"] == 3
+    for b in _run(s, 9):
+        assert [sum(x.startswith(p) for x in b) for p in "pcn"] == [2, 2, 4]
+    flat = [
+        x
+        for b in _run(BalancedSampler.build(POS, NEG + CONF, 5, 0.25, CONF, 0.25), 9)
+        for x in b
+        if x[0] == "c"
+    ]
+    for k in range(0, 18, 3):
+        assert sorted(flat[k : k + 3]) == CONF  # each pass is a full seeded permutation
+    assert s.stats()["drawn"] == {"positive": 18, "negative": 36, "confuser": 18}
+
+
+def test_confuser_resume_is_exact_and_settings_must_match():
+    build = lambda: BalancedSampler.build(POS, NEG + CONF, 8, 0.25, CONF, 0.25)  # noqa: E731
+    straight = _run(build(), 14)
+    first = build()
+    head = _run(first, 5)
+    state = json.loads(json.dumps(first.state_dict()))
+    resumed = build()
+    resumed.load_state(state)
+    assert head + _run(resumed, 9) == straight
+    with pytest.raises(ValueError):
+        BalancedSampler.build(POS, NEG + CONF, 8, 0.25).load_state(state)
+    with pytest.raises(ValueError):
+        BalancedSampler.build(POS, NEG + CONF, 8, 0.25, CONF, 0.125).load_state(state)
+
+
+def test_without_confusers_the_sequence_and_state_are_unchanged():
+    plain = BalancedSampler.build(POS, NEG, 3, 0.25)
+    explicit = BalancedSampler.build(POS, NEG, 3, 0.25, confuser_ids=CONF, confuser_fraction=0.0)
+    assert _run(plain, 6) == _run(explicit, 6)
+    assert set(plain.state_dict()) == {"kind", "positive_fraction", "positives", "negatives", "drawn"}
+    with pytest.raises(ValueError):
+        BalancedSampler.build(POS, NEG, 3, 0.25, confuser_ids=[], confuser_fraction=0.25)
+    with pytest.raises(ValueError):
+        BalancedSampler.build(POS, NEG, 3, 0.25, confuser_ids=POS[:1], confuser_fraction=0.25)
+    with pytest.raises(ValueError):
+        BalancedSampler.build(POS, NEG, 3, 0.5, confuser_ids=CONF, confuser_fraction=0.5)
+
+
+def _add_confuser_rows(corpus) -> None:
+    """Mark 4-7 s of every annotated file as a reviewed blue_a-absent confuser interval (fixture only)."""
+    import csv
+
+    path = corpus["tmp"] / "annotations.csv"
+    rows = list(csv.reader(path.open(encoding="utf-8")))
+    files = sorted({r[1] for r in rows[1:]})
+    with path.open("a", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        for n, fid in enumerate(files):
+            w.writerow(
+                [f"conf-{n}", fid, "0", "4.0", "7.0", "blue_a", "absent", "reviewed", "fixture confuser"]
+            )
+    from whalemix_training.cli import main
+
+    assert main(["validate-labels", "--config", str(corpus["config"])]) == 0
+    assert main(["split", "--config", str(corpus["config"])]) == 0
+
+
+def test_cli_confuser_slots_are_drawn_and_resume_exactly(corpus):
+    _small_config(corpus)
+    _prepare_cli(corpus)
+    _add_confuser_rows(corpus)
+    balance = {
+        "positive_fraction": 0.25,
+        "labels": ["blue_a"],
+        "confuser_fraction": 0.25,
+        "confuser_id_prefixes": ["conf-"],
+    }
+    _set_training(corpus, max_updates=4, micro_batch=4, imbalance="balanced", balance=balance)
+    assert _train(corpus) == 0
+    straight, _ = _weights(corpus)
+    plan = _plan(corpus)
+    assert plan["sampler"]["confusers_available"] >= 1
+    assert plan["session"]["mix"]["drawn"] == {"positive": 4, "negative": 8, "confuser": 4}
+    sampled = set()
+    manifest = json.loads((corpus["out"] / "split-manifest.json").read_text(encoding="utf-8"))
+    for line in (
+        (corpus["out"] / "checkpoints" / "train-sample-log.jsonl").read_text(encoding="utf-8").splitlines()
+    ):
+        for eid in json.loads(line)["ids"]:
+            assert manifest["assignments"][eid.split(":")[0]]["split"] == "train"
+            sampled.add(eid)
+    shutil.rmtree(corpus["out"] / "checkpoints")
+    _set_training(corpus, max_updates=2, micro_batch=4, imbalance="balanced", balance=balance)
+    assert _train(corpus) == 0
+    _set_training(corpus, max_updates=4, micro_batch=4, imbalance="balanced", balance=balance)
+    assert _train(corpus, "--resume", str(corpus["out"] / "checkpoints" / "latest.pt")) == 0
+    resumed, payload = _weights(corpus)
+    assert resumed == straight and payload["sampler"]["drawn"] == {
+        "positive": 4,
+        "negative": 8,
+        "confuser": 4,
+    }
+
+
+def test_cli_confusers_need_prefixes(corpus, capsys):
+    _small_config(corpus)
+    _prepare_cli(corpus)
+    _set_training(corpus, max_updates=0, imbalance="balanced", balance={"confuser_fraction": 0.25})
+    assert _train(corpus) == 1
+    assert "confuser_id_prefixes" in capsys.readouterr().out

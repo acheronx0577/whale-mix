@@ -249,17 +249,23 @@ class BalancedSampler:
     """Seeded positive oversampling: every micro-batch of n holds exactly round(n * positive_fraction)
     positive windows (at least one, at most n - 1) and the rest negatives.
 
-    Positives and negatives are two independent `DeterministicSampler` streams that wrap into their next
-    epoch inside a batch, so the small positive set is reused in a fresh seeded order each pass. The full
-    state (both cursors and epochs plus the draw counters) goes into the checkpoint, so a resume continues
-    the exact sequence."""
+    Optional confusers (hard negatives, e.g. windows inside publisher-labelled calls of another type) get
+    their own fixed share of each batch, round(n * confuser_fraction) (at least one when enabled, always
+    leaving one plain-negative slot), and are removed from the plain-negative pool.
+
+    Every pool is an independent `DeterministicSampler` stream that wraps into its next epoch inside a
+    batch, so small pools are reused in a fresh seeded order each pass. The full state (cursors, epochs and
+    draw counters) goes into the checkpoint, so a resume continues the exact sequence. Without confusers the
+    sequence and the saved state are exactly those of the positive-only sampler."""
 
     positives: DeterministicSampler
     negatives: DeterministicSampler
     positive_fraction: float
     drawn: dict[str, int] = field(default_factory=lambda: {"positive": 0, "negative": 0})
+    confusers: DeterministicSampler | None = None
+    confuser_fraction: float = 0.0
     _last: list[str] = field(default_factory=list, init=False, repr=False, compare=False)
-    _plan: tuple[int, int] = field(default=(0, 0), init=False, repr=False, compare=False)
+    _plan: tuple[int, ...] = field(default=(0, 0, 0), init=False, repr=False, compare=False)
     _orders: dict[tuple[str, int], list[str]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
@@ -268,27 +274,57 @@ class BalancedSampler:
 
     @classmethod
     def build(
-        cls, positive_ids: list[str], negative_ids: list[str], seed: int, positive_fraction: float
+        cls,
+        positive_ids: list[str],
+        negative_ids: list[str],
+        seed: int,
+        positive_fraction: float,
+        confuser_ids: list[str] | None = None,
+        confuser_fraction: float = 0.0,
     ) -> BalancedSampler:
         if not 0.0 < positive_fraction < 1.0:
             raise ValueError("positive_fraction must be between 0 and 1 (exclusive)")
+        if not 0.0 <= confuser_fraction < 1.0 or positive_fraction + confuser_fraction >= 1.0:
+            raise ValueError("confuser_fraction must be >= 0 and leave room for plain negatives")
+        confusers = None
+        if confuser_fraction > 0.0:
+            pool = set(confuser_ids or [])
+            if not pool:
+                raise ValueError("confuser_fraction > 0 needs at least one confuser window")
+            if pool & set(positive_ids):
+                raise ValueError("confuser windows must not be positives")
+            negative_ids = [i for i in negative_ids if i not in pool]
+            confusers = DeterministicSampler(sorted(pool), _derived_seed(seed, "confuser"))
         if not positive_ids or not negative_ids:
             raise ValueError("balanced sampling needs at least one positive and one negative window")
-        return cls(
+        sampler = cls(
             DeterministicSampler(sorted(positive_ids), _derived_seed(seed, "positive")),
             DeterministicSampler(sorted(negative_ids), _derived_seed(seed, "negative")),
             float(positive_fraction),
+            confusers=confusers,
+            confuser_fraction=float(confuser_fraction),
         )
+        if confusers is not None:
+            sampler.drawn["confuser"] = 0
+        return sampler
 
     @property
     def epoch(self) -> int:
-        """Passes over the negatives (the large stream); positives repeat more often by design."""
+        """Passes over the plain negatives (the large stream); smaller pools repeat more often by design."""
         return self.negatives.epoch
 
     def positives_per_batch(self, n: int) -> int:
         if n < 2:
             raise ValueError("balanced sampling needs micro_batch >= 2")
         return min(n - 1, max(1, round(n * self.positive_fraction)))
+
+    def confusers_per_batch(self, n: int) -> int:
+        if self.confusers is None:
+            return 0
+        room = n - self.positives_per_batch(n) - 1
+        if room < 1:
+            raise ValueError("micro_batch too small for positives, confusers and a plain negative")
+        return min(room, max(1, round(n * self.confuser_fraction)))
 
     def _order(self, name: str, s: DeterministicSampler, epoch: int) -> list[str]:
         key = (name, epoch)
@@ -310,26 +346,32 @@ class BalancedSampler:
                 epoch, cursor = epoch + 1, 0
         return out
 
+    def _streams(self) -> list[tuple[str, DeterministicSampler]]:
+        streams = [("positive", self.positives)]
+        if self.confusers is not None:
+            streams.append(("confuser", self.confusers))
+        return [*streams, ("negative", self.negatives)]
+
     def draw(self, n: int) -> list[str]:
         k = self.positives_per_batch(n)
-        self._plan = (k, n - k)
-        self._last = self._peek("positive", self.positives, k) + self._peek("negative", self.negatives, n - k)
+        c = self.confusers_per_batch(n)
+        counts = {"positive": k, "confuser": c, "negative": n - k - c}
+        self._plan = tuple(counts[name] for name, _ in self._streams())
+        self._last = [i for name, s in self._streams() for i in self._peek(name, s, counts[name])]
         return self._last
 
     def consume(self) -> None:
-        k, m = self._plan
-        for s, count in ((self.positives, k), (self.negatives, m)):
+        for (name, s), count in zip(self._streams(), self._plan, strict=True):
+            self.drawn[name] += count
             while count > 0:
                 step = min(count, len(s.example_ids) - s.cursor)
                 s.mark_consumed(step)
                 count -= step
-        self.drawn["positive"] += k
-        self.drawn["negative"] += m
-        self._last, self._plan = [], (0, 0)
+        self._last, self._plan = [], tuple(0 for _ in self._plan)
 
     def stats(self) -> dict[str, Any]:
-        total = self.drawn["positive"] + self.drawn["negative"]
-        return {
+        total = sum(self.drawn.values())
+        out = {
             "kind": self.KIND,
             "positive_fraction": self.positive_fraction,
             "positives_available": len(self.positives.example_ids),
@@ -338,22 +380,40 @@ class BalancedSampler:
             "positive_share_drawn": None if total == 0 else self.drawn["positive"] / total,
             "positive_epochs": self.positives.epoch,
         }
+        if self.confusers is not None:
+            out.update(
+                {
+                    "confuser_fraction": self.confuser_fraction,
+                    "confusers_available": len(self.confusers.example_ids),
+                    "confuser_share_drawn": None if total == 0 else self.drawn["confuser"] / total,
+                    "confuser_epochs": self.confusers.epoch,
+                }
+            )
+        return out
 
     def state_dict(self) -> dict[str, Any]:
-        return {
+        state = {
             "kind": self.KIND,
             "positive_fraction": self.positive_fraction,
             "positives": self.positives.state_dict(),
             "negatives": self.negatives.state_dict(),
             "drawn": dict(self.drawn),
         }
+        if self.confusers is not None:
+            state["confuser_fraction"] = self.confuser_fraction
+            state["confusers"] = self.confusers.state_dict()
+        return state
 
     def load_state(self, state: dict[str, Any]) -> None:
         if state.get("kind") != self.KIND:
             raise ValueError("sampler state is not from a balanced sampler")
         if float(state["positive_fraction"]) != self.positive_fraction:
             raise ValueError("sampler state has a different positive_fraction")
+        if float(state.get("confuser_fraction", 0.0)) != self.confuser_fraction:
+            raise ValueError("sampler state has a different confuser_fraction")
         self.positives.load_state(state["positives"])
         self.negatives.load_state(state["negatives"])
+        if self.confusers is not None:
+            self.confusers.load_state(state["confusers"])
         self.drawn = {k: int(v) for k, v in state["drawn"].items()}
         self._orders.clear()

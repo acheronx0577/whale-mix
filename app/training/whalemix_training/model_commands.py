@@ -236,12 +236,58 @@ def _train_source(
     wanted = set(train_ids)
     positives = sorted(i for i in wanted if any(states[i].get(lbl) == "present" for lbl in labels))
     negatives = sorted(wanted - set(positives))
+    confuser_fraction = float(balance.get("confuser_fraction", 0.0))
+    confusers: list[str] = []
+    if confuser_fraction > 0.0:
+        prefixes = tuple(str(p) for p in balance.get("confuser_id_prefixes") or [])
+        if not prefixes:
+            raise SetupRequired("training.balance.confuser_fraction needs confuser_id_prefixes")
+        confusers = _confuser_windows(
+            prep, set(negatives), prefixes, labels, float(balance.get("confuser_min_overlap", 0.5))
+        )
     try:
         return BalancedSampler.build(
-            positives, negatives, int(training["seed"]), float(balance.get("positive_fraction", 0.25))
+            positives,
+            negatives,
+            int(training["seed"]),
+            float(balance.get("positive_fraction", 0.25)),
+            confuser_ids=confusers,
+            confuser_fraction=confuser_fraction,
         )
     except ValueError as exc:
         raise SetupRequired(f"balanced sampling: {exc}") from exc
+
+
+def _confuser_windows(
+    prep: dict[str, Any],
+    negatives: set[str],
+    prefixes: tuple[str, ...],
+    labels: list[str],
+    min_overlap: float,
+) -> list[str]:
+    """Negative training windows that overlap a reviewed `absent` row (for a balanced label) whose
+    annotation_id starts with one of `prefixes`, by at least `min_overlap` of the shorter interval. Only
+    training windows are candidates, so validation and test labels never select anything."""
+    intervals: dict[tuple[str, int], list[tuple[float, float]]] = {}
+    for row in prep["rows"]:
+        if (
+            row["annotation_id"].startswith(prefixes)
+            and row["state"] == "absent"
+            and row["review_status"] == "reviewed"
+            and row["label"] in labels
+        ):
+            key = (row["file_id"], int(row["channel"]))
+            intervals.setdefault(key, []).append((float(row["start_s"]), float(row["end_s"])))
+    out = []
+    for w in prep["windows"]:
+        if w["example_id"] not in negatives:
+            continue
+        for a0, a1 in intervals.get((w["file_id"], int(w["channel"])), ()):
+            shorter = min(a1 - a0, w["end_s"] - w["start_s"])
+            if shorter > 0 and min(a1, w["end_s"]) - max(a0, w["start_s"]) >= min_overlap * shorter:
+                out.append(w["example_id"])
+                break
+    return sorted(out)
 
 
 def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: dict[str, Any] | None) -> int:

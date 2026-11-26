@@ -75,6 +75,11 @@ DEFAULTS: dict[str, Any] = {
         "imbalance": "none",
         # Used only with imbalance "balanced": share of each micro-batch drawn from positive windows, and
         # the labels whose reviewed `present` state makes a window positive (null = all whale targets).
+        # Optional hard negatives (off unless set; not defaulted here so existing runs keep their identity):
+        # "confuser_fraction" (share of each batch), "confuser_id_prefixes" (annotation_id prefixes of
+        # reviewed `absent` rows that mark confuser intervals, e.g. another call type) and
+        # "confuser_min_overlap" (default 0.5: a negative training window is a confuser when it overlaps
+        # such an interval by at least that share of the shorter of the two).
         "balance": {"positive_fraction": 0.25, "labels": None},
         "max_windows": 2000000,
         "device": "cpu",
