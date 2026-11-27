@@ -3,8 +3,16 @@
 Rust inference worker for WhaleMix Acoustic v1. The desktop app starts it with `QProcess` only when
 audio is queued. It never trains and never downloads weights.
 
-**Status (2026-11-25): no trained model exists.** Every timing below and every test that runs inference uses
-an untrained fixture bundle. They check plumbing, not detection quality.
+**Status (2026-11-26): light model v1 bundle.** The first trained bundle (Pilot 12, seed 14141, model SHA-256
+`5d90c70b…728b`, 16.1 MB fp32 ONNX, dynamic batch) is distributed outside Git as a release asset. Install it
+as `<app>/models/acoustic-v1/` or point `WHALEMIX_MODEL_BUNDLE` at it. At its fixed Blue A threshold 0.897 it
+scored recall 0.825 at 0.76 false alarms/h on the sealed MB01 test (Oct 7–27 2020, 1,272 calls, 494 h
+reviewed background); recorders it was not trained on are weaker. Its `qualification-evidence.json` lists the
+full metrics and disclosures. The fixture timings and tests below still use an untrained fixture bundle; they
+check plumbing, not detection quality.
+
+Measured with the light model v1 bundle on a box CPU (8 vCPU, `--threads 2 --batch 8`): 10,000 real Dryad WAVs
+(479.5 h of audio, 335,450 windows) in 888 s, 1,944× real time, 0 file errors, peak worker RSS 120 MB.
 
 ## Command
 
