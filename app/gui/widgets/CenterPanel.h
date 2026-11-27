@@ -19,6 +19,9 @@ public:
     SearchBox* search_box() { return search_box_; }
 
     void set_rows(const std::vector<Row>& rows, bool has_file, int num_sounds);
+    // Streaming path for engine runs: counts and table cost O(new rows).
+    void append_rows(const std::vector<Row>& rows, size_t from, bool has_file, int num_sounds);
+    size_t shown_rows() const;
     void set_active_pile(const QString& pile);
     QString active_pile() const { return active_pile_; }
 
@@ -45,6 +48,9 @@ private:
     QString active_pile_ = "all";
     int num_rows_ = 0;
     int num_sounds_ = 0;
+    int call_count_ = 0;
+    int not_call_count_ = 0;
+    int review_count_ = 0;
 };
 
 } // namespace whalemix::gui

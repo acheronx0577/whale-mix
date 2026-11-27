@@ -1,6 +1,10 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QTimer>
+
+#include <set>
+#include <string>
 #include "AppState.h"
 #include "EngineBridge.h"
 #include "widgets/TopBar.h"
@@ -50,6 +54,11 @@ private:
     void start_audio_analysis(const QStringList& audio_files, int skipped);
     void connect_engine();
     void append_engine_rows();
+    void flush_engine_view();  // coalesced, incremental view refresh while an analysis streams in
+
+    QTimer* engine_refresh_timer_ = nullptr;
+    std::set<std::string> engine_sounds_;
+    int engine_counts_[3] = {0, 0, 0};  // call, not-call, review over state_.rows()
 
     EngineBridge* engine_ = nullptr;
 

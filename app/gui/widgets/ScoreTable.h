@@ -13,6 +13,10 @@ public:
     explicit ScoreTable(QWidget* parent = nullptr);
 
     void set_rows(const std::vector<Row>& rows, bool has_file);
+    // Streaming path: appends rows[from..] without rebuilding the rows already shown, so a long
+    // analysis run costs O(new rows) per refresh instead of O(all rows).
+    void append_rows(const std::vector<Row>& rows, size_t from, bool has_file);
+    size_t row_count() const { return all_rows_.size(); }
     void set_filter(const QString& pile, const QString& query);
 
     int selected_model_index() const { return selected_model_index_; }
@@ -65,6 +69,8 @@ private:
     };
     std::vector<CachedRow> cached_rows_;
     void update_elided_cache();
+    void update_elided_cache(size_t from);
+    void cache_row(const Row& r);
 
     std::vector<Row> all_rows_;
     std::vector<int> visible_indices_;

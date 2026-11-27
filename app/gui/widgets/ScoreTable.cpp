@@ -42,40 +42,69 @@ ScoreTable::ScoreTable(QWidget* parent) : QAbstractScrollArea(parent) {
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 }
 
+void ScoreTable::cache_row(const Row& r) {
+    CachedRow c;
+    std::string raw_name = r.candidate_id.empty() ? r.sample_id : r.candidate_id;
+    c.win_name = QString::fromStdString(raw_name);
+    c.time_str = QString::fromStdString(format::time_text(r));
+    c.bat = QString::fromStdString(r.bat);
+    c.baf = QString::fromStdString(r.baf);
+    c.laya_str = QString::fromStdString(format::laya_text(r));
+    c.reason_str = QString::fromStdString(r.mix_reason);
+    c.label_str = QString::fromStdString(r.mix_label);
+    c.chip_size = Chip::size_for_label(c.label_str);
+    c.search_haystack_lower = format::search_haystack(r);
+    cached_rows_.push_back(std::move(c));
+}
+
 void ScoreTable::set_rows(const std::vector<Row>& rows, bool has_file) {
     all_rows_ = rows;
     has_file_ = has_file;
 
     cached_rows_.clear();
     cached_rows_.reserve(all_rows_.size());
-
-    for (const auto& r : all_rows_) {
-        CachedRow c;
-        std::string raw_name = r.candidate_id.empty() ? r.sample_id : r.candidate_id;
-        c.win_name = QString::fromStdString(raw_name);
-        c.time_str = QString::fromStdString(format::time_text(r));
-        c.bat = QString::fromStdString(r.bat);
-        c.baf = QString::fromStdString(r.baf);
-        c.laya_str = QString::fromStdString(format::laya_text(r));
-        c.reason_str = QString::fromStdString(r.mix_reason);
-        c.label_str = QString::fromStdString(r.mix_label);
-        c.chip_size = Chip::size_for_label(c.label_str);
-        c.search_haystack_lower = format::search_haystack(r);
-        cached_rows_.push_back(std::move(c));
-    }
+    for (const auto& r : all_rows_) cache_row(r);
 
     update_elided_cache();
     update_filtering();
 }
 
-void ScoreTable::update_elided_cache() {
-    if (cached_rows_.empty()) return;
+void ScoreTable::append_rows(const std::vector<Row>& rows, size_t from, bool has_file) {
+    has_file_ = has_file;
+    if (from != all_rows_.size() || from > rows.size()) {
+        set_rows(rows, has_file);  // out of step with the shown rows: rebuild once
+        return;
+    }
+    const size_t first_new = all_rows_.size();
+    all_rows_.insert(all_rows_.end(), rows.begin() + static_cast<std::ptrdiff_t>(from), rows.end());
+    cached_rows_.reserve(all_rows_.size());
+    for (size_t i = first_new; i < all_rows_.size(); ++i) cache_row(all_rows_[i]);
+    update_elided_cache(first_new);
+
+    const std::string q_std = query_filter_.toStdString();
+    const std::string target_pile = pile_filter_.toStdString();
+    const bool filter_pile = (pile_filter_ != "all");
+    const bool filter_query = !q_std.empty();
+    for (size_t i = first_new; i < all_rows_.size(); ++i) {
+        if (filter_pile && all_rows_[i].mix_label != target_pile) continue;
+        if (filter_query && cached_rows_[i].search_haystack_lower.find(q_std) == std::string::npos) continue;
+        visible_indices_.push_back(static_cast<int>(i));
+    }
+    update_scroll_bars();
+    viewport()->update();
+}
+
+void ScoreTable::update_elided_cache() { update_elided_cache(0); }
+
+void ScoreTable::update_elided_cache(size_t from) {
+    if (cached_rows_.size() <= from) return;
     QFont text_font = fonts::mono(13, 450);
     QFontMetrics fm_text(text_font);
     int cw0 = qMax(10, column_width(0) - 20);
     int cw1 = qMax(10, column_width(1) - 20);
 
-    for (auto& c : cached_rows_) {
+    for (size_t i = from; i < cached_rows_.size(); ++i) {
+        auto& c = cached_rows_[i];
         c.win_name_elided = fm_text.elidedText(c.win_name, Qt::ElideRight, cw0);
         c.time_str_elided = fm_text.elidedText(c.time_str, Qt::ElideRight, cw1);
     }

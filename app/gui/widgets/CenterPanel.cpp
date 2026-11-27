@@ -109,25 +109,44 @@ void CenterPanel::update_pill_active_states() {
 void CenterPanel::set_rows(const std::vector<Row>& rows, bool has_file, int num_sounds) {
     num_rows_ = static_cast<int>(rows.size());
     num_sounds_ = num_sounds;
-
-    int call = 0;
-    int not_call = 0;
-    int review = 0;
-
+    call_count_ = not_call_count_ = review_count_ = 0;
     for (const auto& r : rows) {
-        if (r.mix_label == "call") call++;
-        else if (r.mix_label == "not-call") not_call++;
-        else if (r.mix_label == "review") review++;
+        if (r.mix_label == "call") call_count_++;
+        else if (r.mix_label == "not-call") not_call_count_++;
+        else if (r.mix_label == "review") review_count_++;
     }
 
     pill_all_->set_count(num_rows_);
-    pill_call_->set_count(call);
-    pill_not_call_->set_count(not_call);
-    pill_review_->set_count(review);
+    pill_call_->set_count(call_count_);
+    pill_not_call_->set_count(not_call_count_);
+    pill_review_->set_count(review_count_);
 
     table_->set_rows(rows, has_file);
     update();
 }
+
+void CenterPanel::append_rows(const std::vector<Row>& rows, size_t from, bool has_file, int num_sounds) {
+    if (from != table_->row_count() || from > rows.size()) {
+        set_rows(rows, has_file, num_sounds);
+        return;
+    }
+    for (size_t i = from; i < rows.size(); ++i) {
+        const auto& r = rows[i];
+        if (r.mix_label == "call") call_count_++;
+        else if (r.mix_label == "not-call") not_call_count_++;
+        else if (r.mix_label == "review") review_count_++;
+    }
+    num_rows_ = static_cast<int>(rows.size());
+    num_sounds_ = num_sounds;
+    pill_all_->set_count(num_rows_);
+    pill_call_->set_count(call_count_);
+    pill_not_call_->set_count(not_call_count_);
+    pill_review_->set_count(review_count_);
+    table_->append_rows(rows, from, has_file);
+    update();
+}
+
+size_t CenterPanel::shown_rows() const { return table_->row_count(); }
 
 void CenterPanel::focus_search() {
     search_box_->focus_input();

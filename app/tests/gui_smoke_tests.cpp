@@ -8,6 +8,7 @@
 #include "widgets/Chip.h"
 #include "widgets/Kbd.h"
 #include "widgets/PillButton.h"
+#include "widgets/ScoreTable.h"
 #include "whalemix/table.h"
 #include "whalemix/csv.h"
 
@@ -194,6 +195,47 @@ TEST(GuiSmokeTest, DetailPanelPlaybackAndAmplify) {
     EXPECT_EQ(shot.width(), 1440);
     EXPECT_EQ(shot.height(), 800);
     shot.save("C:/Users/IamTh/.gemini/antigravity/brain/f0c1155d-c01c-4413-86a8-5249f9fad1a1/cpp_app_parity_verified.png");
+}
+
+TEST(GuiSmokeTest, StreamingAppendMatchesFullRebuild) {
+    // Engine runs append rows in many small batches; the incremental path must show exactly what a
+    // full rebuild shows, under an active pile + search filter, without re-caching earlier rows.
+    std::vector<whalemix::Row> rows;
+    for (int i = 0; i < 5000; ++i) {
+        whalemix::Row r;
+        r.sample_id = "file" + std::to_string(i / 60) + ".wav";
+        r.candidate_id = "ev" + std::to_string(i);
+        r.picture_start_s = std::to_string(i % 60 * 5) + ".000";
+        r.picture_end_s = std::to_string(i % 60 * 5 + 10) + ".156";
+        r.bat = (i % 7 == 0) ? "0.950" : "0.010";
+        r.mix_label = r.auto_label = (i % 7 == 0) ? "call" : "not-call";
+        r.mix_reason = r.auto_reason = "blue_a";
+        rows.push_back(r);
+    }
+    whalemix::gui::ScoreTable full;
+    full.resize(900, 600);
+    full.set_filter("call", "file1");
+    full.set_rows(rows, true);
+
+    whalemix::gui::ScoreTable streamed;
+    streamed.resize(900, 600);
+    streamed.set_filter("call", "file1");
+    std::vector<whalemix::Row> growing;
+    size_t shown = 0;
+    for (size_t i = 0; i < rows.size(); i += 37) {
+        const size_t end = std::min(rows.size(), i + 37);
+        growing.insert(growing.end(), rows.begin() + static_cast<std::ptrdiff_t>(i),
+                       rows.begin() + static_cast<std::ptrdiff_t>(end));
+        streamed.append_rows(growing, shown, true);
+        shown = growing.size();
+        ASSERT_EQ(streamed.row_count(), shown);
+    }
+    EXPECT_EQ(streamed.visible_indices(), full.visible_indices());
+    EXPECT_GT(streamed.visible_count(), 0);
+    // An out-of-step append falls back to a full rebuild instead of duplicating rows.
+    streamed.append_rows(rows, 10, true);
+    EXPECT_EQ(streamed.row_count(), rows.size());
+    EXPECT_EQ(streamed.visible_indices(), full.visible_indices());
 }
 
 int main(int argc, char* argv[]) {

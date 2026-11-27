@@ -160,6 +160,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     connect(&state_, &AppState::status_message, status_bar_, &gui::StatusBar::set_status);
 
+    engine_refresh_timer_ = new QTimer(this);
+    engine_refresh_timer_->setSingleShot(true);
+    engine_refresh_timer_->setInterval(250);  // at most ~4 view refreshes per second while streaming
+    connect(engine_refresh_timer_, &QTimer::timeout, this, &MainWindow::flush_engine_view);
+
     engine_ = new EngineBridge(this);  // no worker process starts until audio is queued
     connect_engine();
 }
@@ -188,6 +193,7 @@ void MainWindow::connect_engine() {
                                     .arg(done).arg(total).arg(windows).arg(engine_->committed_rows()));
     });
     connect(engine_, &EngineBridge::run_finished, this, [this](const QString& st, int, const QString& csv) {
+        if (st != "rejected") flush_engine_view();  // show every committed row before the final status
         const QString kind = engine_->model_status().artifact_kind == "fixture-untrained" ? " (fixture model)" : "";
         if (st == "completed") {
             status_bar_->set_status(QString("Analysis complete%1: %2 results in %3")
@@ -210,8 +216,30 @@ void MainWindow::append_engine_rows() {
     for (const QJsonObject& obj : fresh) rows.push_back(row_from_engine_json(obj));
     if (first) {
         state_.set_rows(std::move(rows), state_.source_path());  // picks the first call, emits signals
+        update_all_views();
+        return;
     }
-    update_all_views();
+    // Rows are kept in state immediately; the views catch up on a short coalescing timer so a run
+    // of thousands of files never rebuilds the whole table per committed batch.
+    if (!engine_refresh_timer_->isActive()) engine_refresh_timer_->start();
+}
+
+void MainWindow::flush_engine_view() {
+    if (engine_refresh_timer_) engine_refresh_timer_->stop();
+    const auto& rows = state_.rows();
+    const size_t from = center_panel_->shown_rows();
+    if (from >= rows.size()) return;
+    for (size_t i = from; i < rows.size(); ++i) {
+        const auto& r = rows[i];
+        if (r.mix_label == "call") engine_counts_[0]++;
+        else if (r.mix_label == "not-call") engine_counts_[1]++;
+        else if (r.mix_label == "review") engine_counts_[2]++;
+        if (!r.sample_id.empty()) engine_sounds_.insert(r.sample_id);
+    }
+    const int total = static_cast<int>(rows.size());
+    sidebar_->set_counts(engine_counts_[0], engine_counts_[1], engine_counts_[2], total);
+    center_panel_->append_rows(rows, from, !state_.source_path().isEmpty(),
+                               static_cast<int>(engine_sounds_.size()));
 }
 
 void MainWindow::ingest_paths(const QStringList& paths) {
@@ -359,6 +387,10 @@ void MainWindow::update_all_views() {
 
     sidebar_->set_counts(call, not_call, review, total);
     sidebar_->set_has_manual(has_manual);
+    engine_counts_[0] = call;
+    engine_counts_[1] = not_call;
+    engine_counts_[2] = review;
+    engine_sounds_ = sounds;
 
     center_panel_->set_rows(state_.rows(), !state_.source_path().isEmpty(), num_sounds);
 

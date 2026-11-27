@@ -18,6 +18,7 @@
 
 #include "EngineBridge.h"
 #include "MainWindow.h"
+#include "whalemix/exporter.h"
 
 // A fixture-dependent test cannot run: with WHALEMIX_REQUIRE_FIXTURE=1 (CI) that fails instead of skipping.
 #define WHALEMIX_REQUIRE_OR_SKIP(ok, msg)                                          \
@@ -228,4 +229,114 @@ TEST(EngineBridgeTest, CancelIsAcknowledgedAndPartialResultsKept) {
     std::cout << "[fixture] cancel: process exit " << ack_ms << " ms after cancel request, committed_rows="
               << bridge->committed_rows() << std::endl;
     delete bridge;
+}
+
+// Opt-in stress run with a real qualified bundle (never a fixture): drops a folder of audio through
+// the same ingestion path as drag-and-drop, then checks the GUI event loop never stalls while rows
+// stream into the table and that every committed row is shown. Enable with
+// WHALEMIX_STRESS_AUDIO_DIR=<folder> WHALEMIX_MODEL_BUNDLE=<bundle> WHALEMIX_ENGINE=<worker>.
+TEST(EngineBridgeTest, QualifiedBundleFolderDropStreamsWithoutStalling) {
+    const QString dir = qEnvironmentVariable("WHALEMIX_STRESS_AUDIO_DIR");
+    const QString bundle = qEnvironmentVariable("WHALEMIX_MODEL_BUNDLE");
+    if (dir.isEmpty() || bundle.isEmpty() || engine_exe().isEmpty()) GTEST_SKIP() << "stress run not configured";
+    ASSERT_TRUE(EngineBridge::check_bundle(bundle, false).available) << "bundle is not a qualified release";
+    QTemporaryDir tmp;
+    whalemix::MainWindow window;
+    window.resize(1440, 900);
+    window.show();
+    EngineBridge::Options o;
+    o.bundle_dir = bundle;
+    o.engine_path = engine_exe();
+    o.runs_dir = tmp.filePath("runs");
+    window.set_engine_bridge(new EngineBridge(o, nullptr));
+    auto* bridge = window.engine_bridge();
+
+    QElapsedTimer clock;
+    qint64 last_tick = -1, max_gap = 0, ticks_over_100 = 0;
+    QTimer ticker;
+    ticker.setInterval(10);
+    QObject::connect(&ticker, &QTimer::timeout, [&] {
+        const qint64 now = clock.elapsed();
+        if (last_tick >= 0) {
+            max_gap = std::max(max_gap, now - last_tick);
+            if (now - last_tick > 100) ++ticks_over_100;
+        }
+        last_tick = now;
+    });
+    int files_total = 0, last_files_done = 0;
+    qint64 first_rows_ms = -1;
+    QObject::connect(bridge, &EngineBridge::run_started, [&](const QString&, int n) { files_total = n; });
+    QObject::connect(bridge, &EngineBridge::progress, [&](int done, int, qint64) { last_files_done = done; });
+    QObject::connect(bridge, &EngineBridge::rows_committed, [&](qint64) {
+        if (first_rows_ms < 0) first_rows_ms = clock.elapsed();
+    });
+    QSignalSpy finished(bridge, &EngineBridge::run_finished);
+    clock.start();
+    ticker.start();
+    window.ingest_paths({dir});
+    const int timeout_ms = qEnvironmentVariableIntValue("WHALEMIX_STRESS_TIMEOUT_MS") > 0
+                               ? qEnvironmentVariableIntValue("WHALEMIX_STRESS_TIMEOUT_MS") : 3600000;
+    ASSERT_TRUE(finished.wait(timeout_ms));
+    QCoreApplication::processEvents();
+    ticker.stop();
+    const qint64 total_ms = clock.elapsed();
+    EXPECT_EQ(finished.first().at(0).toString(), "completed");
+    const size_t rows = window.state()->rows().size();
+    EXPECT_EQ(static_cast<qint64>(rows), bridge->committed_rows());
+    EXPECT_EQ(window.center_panel()->shown_rows(), rows);
+    const int max_gap_budget = qEnvironmentVariableIntValue("WHALEMIX_STRESS_MAX_GAP_MS") > 0
+                                   ? qEnvironmentVariableIntValue("WHALEMIX_STRESS_MAX_GAP_MS") : 250;
+    EXPECT_LT(max_gap, max_gap_budget) << "GUI event loop stalled";
+    std::cout << "[stress] files=" << files_total << " files_done=" << last_files_done << " rows=" << rows
+              << " first_rows_ms=" << first_rows_ms << " total_ms=" << total_ms
+              << " max_event_loop_gap_ms=" << max_gap << " gaps_over_100ms=" << ticks_over_100
+              << " app_peak_rss_mib=" << app_peak_rss_mib() << std::endl;
+}
+
+// Opt-in: load a real engine results.partial.jsonl (e.g. a 10,000-file run) into the window and
+// time the interactive features on that table size. WHALEMIX_STRESS_RESULTS=<results.partial.jsonl>.
+TEST(EngineBridgeTest, LargeEngineTableFeaturesStayInteractive) {
+    const QString path = qEnvironmentVariable("WHALEMIX_STRESS_RESULTS");
+    if (path.isEmpty()) GTEST_SKIP() << "WHALEMIX_STRESS_RESULTS not set";
+    QFile f(path);
+    ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+    std::vector<whalemix::Row> rows;
+    while (!f.atEnd()) {
+        const QByteArray line = f.readLine();
+        const QJsonObject obj = QJsonDocument::fromJson(line).object();
+        if (!obj.isEmpty()) rows.push_back(whalemix::row_from_engine_json(obj));
+    }
+    ASSERT_FALSE(rows.empty());
+    const size_t n = rows.size();
+    whalemix::MainWindow window;
+    window.resize(1440, 900);
+    window.show();
+    QElapsedTimer t;
+    t.start();
+    window.state()->set_rows(std::move(rows), path);
+    window.center_panel()->set_rows(window.state()->rows(), true, 0);
+    const qint64 load_ms = t.restart();
+    window.center_panel()->set_active_pile("call");
+    const int calls = window.center_panel()->table()->visible_count();
+    const qint64 filter_ms = t.restart();
+    window.center_panel()->set_active_pile("all");
+    window.center_panel()->table()->select_first_call_or_first();
+    QCoreApplication::processEvents();
+    const qint64 select_ms = t.restart();
+    window.set_manual_label("review");
+    const qint64 label_ms = t.restart();
+    window.undo_override();
+    const qint64 undo_ms = t.restart();
+    QTemporaryDir out;
+    whalemix::export_rows(window.state()->rows(), out.path().toStdString());
+    const qint64 export_ms = t.restart();
+    QFile csv(out.filePath("decisions.csv"));
+    ASSERT_TRUE(csv.open(QIODevice::ReadOnly));
+    qint64 lines = 0;
+    while (!csv.atEnd()) { csv.readLine(); ++lines; }
+    EXPECT_EQ(lines, static_cast<qint64>(n) + 1);
+    EXPECT_GT(calls, 0);
+    std::cout << "[features] rows=" << n << " calls=" << calls << " load_ms=" << load_ms
+              << " filter_call_ms=" << filter_ms << " select_ms=" << select_ms << " manual_label_ms=" << label_ms
+              << " undo_ms=" << undo_ms << " export_ms=" << export_ms << " decisions_csv_lines=" << lines << std::endl;
 }
