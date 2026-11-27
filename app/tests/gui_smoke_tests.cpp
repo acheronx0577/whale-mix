@@ -313,17 +313,29 @@ TEST(GuiRedesignTest, UnifiedTableDropsBafAndLayaColumnsAndPadsReason) {
     EXPECT_EQ(titles, QStringList({"WINDOW", "TIME", "CONFIDENCE", "REASON", "LABEL"}));
     EXPECT_FALSE(titles.contains("BAF"));
     EXPECT_FALSE(titles.contains("LAYA"));
-    EXPECT_EQ(t.reason_display(0), "Blue whale A-call");
-    EXPECT_EQ(t.reason_display(1), "Below threshold");
-    // The longest REASON text plus 16px left and 16px right padding fits before the LABEL pill.
-    QFontMetrics fm(whalemix::fonts::mono(13, 450));
-    const int need = fm.horizontalAdvance("Fixture model (untrained)") + 32;
-    EXPECT_GE(t.column_span(3), need);
+    EXPECT_EQ(t.reason_display(0).toStdString(), "Blue whale A-call (\u2265 89.7% threshold)");
+    EXPECT_EQ(t.reason_display(1).toStdString(), "No call (< 89.7% threshold)");
+    // At full width the longest call / not-call REASON text plus 16px padding each side fits.
+    QFontMetrics fm(whalemix::fonts::body(13));
+    EXPECT_GE(t.column_span(3), fm.horizontalAdvance(t.reason_display(0)) + 32);
     EXPECT_EQ(t.column_left(4), t.column_left(3) + t.column_span(3));
+    // The scrollbar lives inside the rounded card: below the header, inset from the right border.
+    auto* bar = t.overlay_scroll_bar();
+    ASSERT_NE(bar, nullptr);
+    EXPECT_TRUE(bar->isVisible());
+    EXPECT_EQ(bar->parentWidget(), t.viewport());
+    EXPECT_GE(bar->geometry().top(), 34);
+    EXPECT_LE(bar->geometry().right(), t.viewport()->width() - 1 - 4);
+    EXPECT_LE(bar->geometry().bottom(), t.viewport()->height() - 1 - 4);
+    EXPECT_FALSE(t.verticalScrollBar()->isVisible());
     // With the inspector open the table is ~760px wide: REASON still fits and LABEL stays visible.
     t.resize(760, 600);
     QApplication::processEvents();
-    EXPECT_GE(t.column_span(3), fm.horizontalAdvance("Blue whale A-call") + 32);
+    // Inspector open: at least the medium variant ("Blue whale A-call (>= 89.7%)") still fits.
+    const QStringList v = whalemix::gui::display::reason_variants(unified_rows()[0], 0.897);
+    EXPECT_GE(t.column_span(3), fm.horizontalAdvance(v[1]) + 32);
+    const QStringList nv = whalemix::gui::display::reason_variants(unified_rows()[1], 0.897);
+    EXPECT_GE(t.column_span(3), fm.horizontalAdvance(nv[0]) + 32);
     EXPECT_LE(t.column_left(4) + 112, t.viewport()->width());
     // Legacy CSV rows keep the seven Blue A + Laya columns.
     std::vector<whalemix::Row> legacy = unified_rows();
@@ -353,6 +365,10 @@ TEST(GuiRedesignTest, InspectorStartsCollapsedOpensOnClickAndCloses) {
     window.center_panel()->set_rows(window.state()->rows(), true, 1);
     QApplication::processEvents();
     EXPECT_FALSE(window.inspector_visible());
+    // Unified model: no Review pile anywhere (pill, sidebar row, SET LABEL option).
+    window.center_panel()->table()->set_unified_mode(true);
+    window.center_panel()->sync_mode();
+    EXPECT_FALSE(window.center_panel()->review_pill()->isVisible());
     const int table_w_collapsed = window.center_panel()->table()->width();
 
     // Click the first data row (header is 34px, rows are 49px)
@@ -397,6 +413,7 @@ TEST(GuiRedesignTest, InspectorLayoutHasNoOverlapOrClipping) {
     const QRect b = fw.boundingRect(QRect(24, 0, 332, 400), Qt::TextWordWrap | Qt::AlignLeft, det.why_display_text());
     EXPECT_LE(b.right(), 356);
     EXPECT_FALSE(det.why_display_text().contains("blue_a"));
+    EXPECT_TRUE(det.content_height() > 0);
     QPixmap shot = det.grab();
     EXPECT_FALSE(shot.isNull());
 }

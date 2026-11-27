@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractScrollArea>
+#include <QScrollBar>
 #include <vector>
 #include <QString>
 #include "whalemix/row.h"
@@ -36,6 +37,8 @@ public:
     // Unified WhaleMix light model rows (engine runs): WINDOW, TIME, CONFIDENCE, REASON, LABEL.
     // Legacy Blue A + Laya CSVs keep the original seven columns. Detected from the first row.
     void set_unified_mode(bool unified);
+    // Blue A call threshold shown in the plain-English REASON text.
+    void set_threshold(double t) { threshold_ = t; viewport()->update(); }
     bool unified_mode() const { return unified_; }
     int column_count() const { return unified_ ? 5 : 7; }
     QString column_title(int col) const;
@@ -43,6 +46,10 @@ public:
     QString reason_display(size_t model_index) const;
     int column_left(int col) const { return column_x(col); }
     int column_span(int col) const { return column_width(col); }
+
+    // Slim scrollbar drawn inside the rounded table card (below the header, inset from the right
+    // border). The area's own scrollbar stays hidden and only holds the scroll range and value.
+    QScrollBar* overlay_scroll_bar() const { return overlay_bar_; }
 
     const std::vector<int>& visible_indices() const { return visible_indices_; }
     int visible_count() const { return static_cast<int>(visible_indices_.size()); }
@@ -64,6 +71,10 @@ protected:
 private:
     void update_filtering();
     void update_scroll_bars();
+    void place_overlay_bar();
+    QScrollBar* overlay_bar_ = nullptr;
+    static constexpr int kBarWidth = 12;   // transparent track; the handle is 6px
+    static constexpr int kBarInset = 5;    // gap to the card's right border and header / bottom
     void scroll_to_selection();
     int row_at_pos(int y) const;
     int column_x(int col) const;
@@ -78,7 +89,6 @@ private:
         QString baf;
         QString laya_str;
         QString reason_str;
-        QString reason_plain;
         QString conf_str;
         QString label_str;
         QSize chip_size;
@@ -87,6 +97,7 @@ private:
     static CachedRow make_cached_row(const Row& r);
     void detect_mode();
     bool unified_ = false;
+    double threshold_ = 0.897;
     std::vector<CachedRow> cached_rows_;
     void update_elided_cache();
     void update_elided_cache(size_t from);

@@ -5,6 +5,7 @@
 
 #include <QLocale>
 #include <QString>
+#include <QStringList>
 #include <cmath>
 #include <cstdlib>
 #include "whalemix/row.h"
@@ -36,14 +37,18 @@ inline QString confidence_text(const Row& r) {
 
 inline bool is_fixture(const Row& r) { return r.mix_reason.rfind("fixture model", 0) == 0; }
 
-// Short label for the table's REASON column.
-inline QString reason_short(const Row& r) {
-    if (r.mix_reason == "manual") return "Set by hand";
-    if (is_fixture(r)) return "Fixture model (untrained)";
-    if (r.mix_label == "call") return "Blue whale A-call";
-    if (r.mix_label == "review") return "Needs review";
-    if (r.bat.empty()) return "Not assessable";
-    return "Below threshold";
+// REASON cell variants from longest to shortest; the table shows the longest that fits its column.
+inline QStringList reason_variants(const Row& r, double threshold) {
+    const QString thr = percent(threshold);
+    if (r.mix_reason == "manual") return {"Set by hand (you changed the label)", "Set by hand"};
+    if (is_fixture(r)) return {"Fixture model (untrained)", "Fixture model"};
+    if (r.bat.empty()) return {"Not assessable for A-calls", "Not assessable"};
+    if (r.mix_label == "call")
+        return {QString("Blue whale A-call (\u2265 %1 threshold)").arg(thr),
+                QString("Blue whale A-call (\u2265 %1)").arg(thr), QString("A-call \u2265 %1").arg(thr)};
+    if (r.mix_label == "review") return {"Needs review (uncertain)", "Needs review"};
+    return {QString("No call (< %1 threshold)").arg(thr), QString("No call (< %1)").arg(thr),
+            QString("< %1").arg(thr)};
 }
 
 // One or two plain sentences for the inspector's WHY THIS LABEL block.

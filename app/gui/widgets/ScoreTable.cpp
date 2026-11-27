@@ -17,27 +17,37 @@ ScoreTable::ScoreTable(QWidget* parent) : QAbstractScrollArea(parent) {
     viewport()->setMouseTracking(true);
     setFrameShape(QFrame::NoFrame);
 
-    verticalScrollBar()->setStyleSheet(
-        "QScrollBar:vertical {"
-        "  width: 10px;"
-        "  background: transparent;"
-        "  margin: 34px 0 0 0;"
+    // The built-in scrollbar would sit outside the card's rounded border, so it stays hidden and
+    // a slim overlay bar inside the viewport mirrors its range and value.
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    overlay_bar_ = new QScrollBar(Qt::Vertical, viewport());
+    overlay_bar_->setObjectName("scoreTableScrollBar");
+    overlay_bar_->setCursor(Qt::ArrowCursor);
+    overlay_bar_->setStyleSheet(
+        "QScrollBar#scoreTableScrollBar:vertical {"
+        "  width: 12px; background: transparent; border: none; margin: 0;"
         "}"
-        "QScrollBar::handle:vertical {"
-        "  background: #d9e4f7;"
-        "  min-height: 24px;"
-        "  border-radius: 5px;"
+        "QScrollBar#scoreTableScrollBar::handle:vertical {"
+        "  background: #CBD5E1; min-height: 32px; border-radius: 3px; margin: 0 3px;"
         "}"
-        "QScrollBar::handle:vertical:hover {"
-        "  background: #2563eb;"
+        "QScrollBar#scoreTableScrollBar::handle:vertical:hover,"
+        "QScrollBar#scoreTableScrollBar::handle:vertical:pressed {"
+        "  background: #94A3B8;"
         "}"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {"
-        "  height: 0px;"
+        "QScrollBar#scoreTableScrollBar::add-line:vertical, QScrollBar#scoreTableScrollBar::sub-line:vertical {"
+        "  height: 0px; border: none; background: transparent;"
         "}"
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
+        "QScrollBar#scoreTableScrollBar::add-page:vertical, QScrollBar#scoreTableScrollBar::sub-page:vertical {"
         "  background: transparent;"
         "}"
     );
+    overlay_bar_->hide();
+    connect(verticalScrollBar(), &QScrollBar::rangeChanged, this, [this](int lo, int hi) {
+        overlay_bar_->setRange(lo, hi);
+        overlay_bar_->setVisible(hi > lo);
+    });
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, overlay_bar_, &QScrollBar::setValue);
+    connect(overlay_bar_, &QScrollBar::valueChanged, verticalScrollBar(), &QScrollBar::setValue);
     verticalScrollBar()->setSingleStep(kRowHeight);
     horizontalScrollBar()->hide();
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -52,7 +62,6 @@ ScoreTable::CachedRow ScoreTable::make_cached_row(const Row& r) {
     c.baf = QString::fromStdString(r.baf);
     c.laya_str = QString::fromStdString(format::laya_text(r));
     c.reason_str = QString::fromStdString(r.mix_reason);
-    c.reason_plain = display::reason_short(r);
     c.conf_str = display::confidence_text(r);
     c.label_str = QString::fromStdString(r.mix_label);
     c.chip_size = Chip::size_for_label(c.label_str);
@@ -98,7 +107,8 @@ QString ScoreTable::column_title(int col) const {
 
 QString ScoreTable::reason_display(size_t model_index) const {
     if (model_index >= cached_rows_.size()) return QString();
-    return unified_ ? cached_rows_[model_index].reason_plain : cached_rows_[model_index].reason_str;
+    if (!unified_) return cached_rows_[model_index].reason_str;
+    return display::reason_variants(all_rows_[model_index], threshold_).first();
 }
 
 void ScoreTable::set_rows(const std::vector<Row>& rows, bool has_file) {
@@ -303,6 +313,16 @@ void ScoreTable::update_scroll_bars() {
     verticalScrollBar()->setRange(0, qMax(0, content_h - view_h));
     verticalScrollBar()->setPageStep(view_h);
     verticalScrollBar()->setSingleStep(kRowHeight);
+    overlay_bar_->setPageStep(view_h);
+    overlay_bar_->setSingleStep(kRowHeight);
+    place_overlay_bar();
+}
+
+void ScoreTable::place_overlay_bar() {
+    const int top = kHeaderHeight + kBarInset;
+    const int h = viewport()->height() - top - kBarInset;
+    overlay_bar_->setGeometry(viewport()->width() - kBarInset - kBarWidth, top, kBarWidth, qMax(0, h));
+    overlay_bar_->raise();
 }
 
 void ScoreTable::wheelEvent(QWheelEvent* event) {
@@ -551,9 +571,20 @@ void ScoreTable::paintEvent(QPaintEvent* /*event*/) {
             p.drawText(column_x(2) + kCellPad, ty, cached.conf_str);
 
             // Col 3: REASON, elided so at least kCellPad px stay clear before the LABEL pill
+            // REASON in the sans body face: longest variant that fits, else elided
             const int reason_w = qMax(10, column_width(3) - 2 * kCellPad);
+            const QFont reason_font = fonts::body(13);
+            const QFontMetrics fm_reason(reason_font);
+            const QStringList variants = display::reason_variants(row_data, threshold_);
+            QString reason = variants.last();
+            for (const QString& v : variants) {
+                if (fm_reason.horizontalAdvance(v) <= reason_w) { reason = v; break; }
+            }
+            p.setFont(reason_font);
             p.setPen(theme::kSlate);
-            p.drawText(column_x(3) + kCellPad, ty, fm_text.elidedText(cached.reason_plain, Qt::ElideRight, reason_w));
+            const int rty = row_y + (kRowHeight - fm_reason.height()) / 2 + fm_reason.ascent();
+            p.drawText(column_x(3) + kCellPad, rty, fm_reason.elidedText(reason, Qt::ElideRight, reason_w));
+            p.setFont(text_font);
 
             // Col 4: LABEL (Chip)
             const int chip_y = row_y + (kRowHeight - 22) / 2;

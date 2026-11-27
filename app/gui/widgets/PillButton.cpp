@@ -3,6 +3,7 @@
 #include "Fonts.h"
 #include <QFontMetrics>
 #include <QMouseEvent>
+#include <QLocale>
 
 namespace whalemix::gui {
 
@@ -35,18 +36,18 @@ void PillButton::set_active(bool active) {
     }
 }
 
+namespace {
+// Count badge: comma-grouped, same sans family as the name, in a soft rounded counter.
+QString count_text(int n) { return QLocale(QLocale::English).toString(n); }
+QFont name_font() { return fonts::sans(15, 450, -0.02); }
+QFont badge_font() { return fonts::sans(12, 600, 0.0); }
+constexpr int kPadL = 14, kGap = 7, kPadR = 6, kBadgeH = 20, kBadgePadX = 7;
+}  // namespace
+
 QSize PillButton::sizeHint() const {
-    QFont fn = fonts::sans(15, 450, -0.02);
-    QFontMetrics fmn(fn);
-    int nw = fmn.horizontalAdvance(name_);
-
-    QFont fc = fonts::mono(11, 450);
-    QFontMetrics fmc(fc);
-    int cw = fmc.horizontalAdvance(QString::number(count_));
-
-    // 14px left padding + name + 3px gap + count + 14px right padding
-    int w = 14 + nw + 3 + cw + 14;
-    return QSize(w, 32);
+    const int nw = QFontMetrics(name_font()).horizontalAdvance(name_);
+    const int bw = QFontMetrics(badge_font()).horizontalAdvance(count_text(count_)) + 2 * kBadgePadX;
+    return QSize(kPadL + nw + kGap + qMax(bw, kBadgeH) + kPadR, 32);
 }
 
 void PillButton::enterEvent(QEnterEvent* /*event*/) {
@@ -114,26 +115,28 @@ void PillButton::paintEvent(QPaintEvent* /*event*/) {
     p.setBrush(fill);
     p.drawRoundedRect(r, 16.0, 16.0);
 
-    // Name: 15px sans 450
-    QFont fn = fonts::sans(15, 450, -0.02);
+    // Name: 15px sans 450, vertically centred
+    QFont fn = name_font();
     p.setFont(fn);
     p.setPen(text_color);
     QFontMetrics fmn(fn);
-    int nw = fmn.horizontalAdvance(name_);
+    const int nw = fmn.horizontalAdvance(name_);
+    const int text_y = (height() - fmn.height()) / 2 + fmn.ascent() + y_off;
+    p.drawText(kPadL, text_y, name_);
 
-    // Draw name at x = 14
-    int text_y = (height() - fmn.height()) / 2 + fmn.ascent() + y_off;
-    p.drawText(14, text_y, name_);
-
-    // Count: 11px mono
-    QFont fc = fonts::mono(11, 450);
-    p.setFont(fc);
-    p.setPen(count_color);
+    // Count badge
+    QFont fc = badge_font();
     QFontMetrics fmc(fc);
-    QString count_str = QString::number(count_);
-    int count_x = 14 + nw + 3;
-    int count_y = (height() - fmc.height()) / 2 + fmc.ascent() + y_off;
-    p.drawText(count_x, count_y, count_str);
+    const QString cs = count_text(count_);
+    const int bw = qMax(fmc.horizontalAdvance(cs) + 2 * kBadgePadX, kBadgeH);
+    const QRectF badge(kPadL + nw + kGap, (height() - kBadgeH) / 2.0 + y_off, bw, kBadgeH);
+    QColor badge_fill = active_ ? QColor(255, 255, 255, 38) : (hovered_ || pressed_ ? theme::kMist : QColor(Qt::white));
+    p.setPen(active_ ? Qt::NoPen : QPen(theme::kLine, 1.0));
+    p.setBrush(badge_fill);
+    p.drawRoundedRect(badge.adjusted(0.5, 0.5, -0.5, -0.5), kBadgeH / 2.0, kBadgeH / 2.0);
+    p.setFont(fc);
+    p.setPen(active_ ? QColor(Qt::white) : count_color);
+    p.drawText(badge, Qt::AlignCenter, cs);
 }
 
 } // namespace whalemix::gui

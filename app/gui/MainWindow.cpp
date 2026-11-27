@@ -212,6 +212,8 @@ bool MainWindow::inspector_visible() const { return detail_scroll_ && !detail_sc
 void MainWindow::set_unified_mode(bool unified) {
     const double thr = unified ? engine_->model_status().blue_a_threshold : gui::display::kDefaultBlueAThreshold;
     center_panel_->table()->set_unified_mode(unified);
+    center_panel_->table()->set_threshold(thr);
+    center_panel_->sync_mode();
     sidebar_->set_unified_model(unified, thr);
     detail_panel_->set_threshold(thr);
     status_bar_->set_version_text(unified ? QString::fromUtf8("v0.2 \xc2\xb7 WHALEMIX LIGHT")
@@ -728,7 +730,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         set_manual_label("not-call");
         return;
     }
-    if (event->key() == Qt::Key_R) {
+    if (event->key() == Qt::Key_R && !center_panel_->table()->unified_mode()) {
         set_manual_label("review");
         return;
     }

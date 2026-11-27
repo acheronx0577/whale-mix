@@ -215,8 +215,8 @@ void DetailPanel::set_row(const Row* row, const QString& csv_folder) {
 
 int DetailPanel::content_height() const {
     if (!has_row_) return 120;
-    QRect last_opt = option_rect(2);
-    return last_opt.bottom() + 65;
+    QRect last_opt = option_rect(unified_mode() ? 1 : 2);
+    return last_opt.bottom() + 28;
 }
 
 QSize DetailPanel::sizeHint() const {
@@ -251,6 +251,7 @@ QRect DetailPanel::option_rect(int index) const {
     int set_label_y = reason_y + 18 + 19;
     int options_start_y = set_label_y + 14 + 12;
 
+    if (index == 2 && unified_mode()) return QRect();  // unified model: Call / Not-call only
     if (index >= 0 && index <= 2) {
         return QRect(24, options_start_y + index * (42 + 8), 332, 42);
     }
@@ -739,6 +740,7 @@ void DetailPanel::paintEvent(QPaintEvent* /*event*/) {
 
     for (int i = 0; i < 3; ++i) {
         QRect r = option_rect(i);
+        if (r.isNull()) continue;
         bool is_active = (current_row_data_.mix_label == options[i].label.toStdString());
         bool is_hovered = (hovered_option_ == i);
         bool is_pressed = (pressed_option_ == i);
@@ -770,46 +772,7 @@ void DetailPanel::paintEvent(QPaintEvent* /*event*/) {
         QSize k_sz = Kbd::size_for_key(options[i].key, KbdStyle::Default);
         Kbd::paint(&p, QRect(r.right() - 11 - k_sz.width(), r.y() + (42 - k_sz.height()) / 2, k_sz.width(), k_sz.height()), options[i].key, KbdStyle::Default);
     }
-
-    // 7. Keys line: 10px below last option row
-    QRect last_opt = option_rect(2);
-    int keys_y = last_opt.bottom() + 10;
-    int cur_k_x = 24;
-
-    QFont keys_font = fonts::body(13);
-    p.setFont(keys_font);
-    p.setPen(theme::kSlate);
-    QFontMetrics fm_keys(keys_font);
-    int text_ky = keys_y + (21 - fm_keys.height()) / 2 + fm_keys.ascent();
-
-    QSize sp_k = Kbd::size_for_key("Space", KbdStyle::Default);
-    Kbd::paint(&p, QRect(cur_k_x, keys_y, sp_k.width(), sp_k.height()), "Space", KbdStyle::Default);
-    cur_k_x += sp_k.width() + 5;
-    p.drawText(cur_k_x, text_ky, "play");
-    cur_k_x += fm_keys.horizontalAdvance("play") + 8;
-
-    QSize a_k = Kbd::size_for_key("A", KbdStyle::Default);
-    Kbd::paint(&p, QRect(cur_k_x, keys_y, a_k.width(), a_k.height()), "A", KbdStyle::Default);
-    cur_k_x += a_k.width() + 5;
-    p.drawText(cur_k_x, text_ky, "amplify");
-    cur_k_x += fm_keys.horizontalAdvance("amplify") + 8;
-
-    QSize j_sz = Kbd::size_for_key("J", KbdStyle::Default);
-    Kbd::paint(&p, QRect(cur_k_x, keys_y, j_sz.width(), j_sz.height()), "J", KbdStyle::Default);
-    cur_k_x += j_sz.width() + 3;
-
-    QSize k_sz = Kbd::size_for_key("K", KbdStyle::Default);
-    Kbd::paint(&p, QRect(cur_k_x, keys_y, k_sz.width(), k_sz.height()), "K", KbdStyle::Default);
-    cur_k_x += k_sz.width() + 5;
-
-    p.drawText(cur_k_x, text_ky, "navigate");
-    cur_k_x += fm_keys.horizontalAdvance("navigate") + 8;
-
-    QSize e_sz = Kbd::size_for_key("E", KbdStyle::Default);
-    Kbd::paint(&p, QRect(cur_k_x, keys_y, e_sz.width(), e_sz.height()), "E", KbdStyle::Default);
-    cur_k_x += e_sz.width() + 5;
-
-    p.drawText(cur_k_x, text_ky, "export");
+    // Keyboard shortcuts (Space, A, J/K, E, C/N/R) still work; no hint row, to keep the panel clean.
 }
 
 } // namespace whalemix::gui

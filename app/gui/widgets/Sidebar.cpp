@@ -126,12 +126,14 @@ QSize Sidebar::sizeHint() const {
 }
 
 QRect Sidebar::pile_row_rect(int index) const {
+    // Unified light model: no Review pile, so Total moves up one row.
     int start_y = 60;
+    if (unified_ && index == 2) return QRect();
     if (index >= 0 && index <= 2) {
         return QRect(24, start_y + index * 40, 192, 40);
     }
     if (index == 3) {
-        return QRect(24, start_y + 3 * 40, 192, 42);
+        return QRect(24, start_y + (unified_ ? 2 : 3) * 40, 192, 42);
     }
     return QRect();
 }
@@ -321,6 +323,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
 
     for (int i = 0; i < 3; ++i) {
         QRect r = pile_row_rect(i);
+        if (r.isNull()) continue;  // Review pile hidden for the unified model
         bool is_active = (active_pile_ == rows[i].pile_id);
         bool is_hovered = (hovered_row_ == i);
         bool is_pressed = (pressed_row_ == i);
@@ -351,7 +354,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
         // Count right aligned
         p.setFont(count_font);
         p.setPen(theme::kInk);
-        QString cnt_str = QString::number(rows[i].count);
+        QString cnt_str = display::thousands(rows[i].count);
         int cw = fm_count.horizontalAdvance(cnt_str);
         p.drawText(r.right() - cw, text_y, cnt_str);
     }
@@ -370,7 +373,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
 
     p.setFont(tot_cnt_font);
     p.setPen(theme::kInk);
-    QString tot_str = QString::number(total);
+    QString tot_str = display::thousands(total);
     int tot_cw = fm_tot_cnt.horizontalAdvance(tot_str);
     p.drawText(r_tot.right() - tot_cw, tot_text_y, tot_str);
 
@@ -487,7 +490,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
         p.drawText(bound, Qt::TextWordWrap | Qt::AlignLeft, desc);
         y += bound.height() + 6;
         if (has_manual_) {
-            const QString man = "Set by hand: you changed it with C, N or R.";
+            const QString man = "Set by hand: you changed it with C or N.";
             QRect mb = p.boundingRect(QRect(24, y, 192, 100), Qt::TextWordWrap | Qt::AlignLeft, man);
             p.drawText(mb, Qt::TextWordWrap | Qt::AlignLeft, man);
         }

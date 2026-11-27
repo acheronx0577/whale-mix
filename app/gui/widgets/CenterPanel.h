@@ -29,6 +29,9 @@ public:
     QString active_pile() const { return active_pile_; }
 
     void focus_search();
+    // Show or hide the Review pill to match the table mode (unified model has no Review pile).
+    void sync_mode();
+    PillButton* review_pill() { return pill_review_; }
 
 signals:
     void pile_filter_changed(const QString& pile);

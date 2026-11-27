@@ -1,4 +1,5 @@
 ﻿#include "TopBar.h"
+#include <QImage>
 #include "Theme.h"
 #include "Fonts.h"
 #include "Kbd.h"
@@ -199,14 +200,30 @@ void TopBar::paintEvent(QPaintEvent* /*event*/) {
     p.setPen(QPen(theme::kLine, 1.0));
     p.drawLine(0, 71, width(), 71);
 
-    // Left brand mark: 36x36 pixel whale logo at x = 24, vertically centered in 71px bar
+    // Left brand mark: the whale cropped to its visible pixels (spout to belly) and scaled to
+    // kLogoH px tall with its aspect ratio kept, vertically centred in the 71px bar. At 40px the
+    // 53x40 art draws 1:1, so no pixel rows are dropped and the belly stays round.
+    constexpr int kLogoH = 40;
     static QPixmap logo_pixmap;
     if (logo_pixmap.isNull()) {
-        logo_pixmap.load(":/icons/whale-logo-native-53.png");
+        QImage src(":/icons/whale-logo-native-53.png");
+        if (!src.isNull()) {
+            QRect bbox;
+            for (int y = 0; y < src.height(); ++y)
+                for (int x = 0; x < src.width(); ++x)
+                    if (qAlpha(src.pixel(x, y)) > 0) bbox |= QRect(x, y, 1, 1);
+            if (bbox.isValid()) src = src.copy(bbox);
+            const qreal dpr = devicePixelRatioF();
+            logo_pixmap = QPixmap::fromImage(src.scaledToHeight(qRound(kLogoH * dpr), Qt::SmoothTransformation));
+            logo_pixmap.setDevicePixelRatio(dpr);
+        }
     }
-    int brand_y = (71 - 36) / 2;
+    int logo_w = 0;
     if (!logo_pixmap.isNull()) {
-        p.drawPixmap(QRect(24, brand_y, 36, 36), logo_pixmap);
+        logo_w = qRound(logo_pixmap.width() / logo_pixmap.devicePixelRatio());
+        const QSize sz = QSize(logo_w, kLogoH);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        p.drawPixmap(QRect(QPoint(24, (71 - kLogoH) / 2), sz), logo_pixmap);
     }
 
     // WHALE MIX text: mono 11px 450 weight .12em ink with 10px gap
@@ -214,7 +231,7 @@ void TopBar::paintEvent(QPaintEvent* /*event*/) {
     p.setFont(brand_font);
     p.setPen(theme::kInk);
     QFontMetrics fm_brand(brand_font);
-    int brand_text_x = 24 + 36 + 10; // 10px gap
+    int brand_text_x = 24 + (logo_w > 0 ? logo_w : 36) + 10; // 10px gap
     int text_y = (71 - fm_brand.height()) / 2 + fm_brand.ascent();
     p.drawText(brand_text_x, text_y, "WHALE MIX");
 

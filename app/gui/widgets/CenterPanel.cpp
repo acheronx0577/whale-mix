@@ -128,7 +128,14 @@ void CenterPanel::set_rows(const std::vector<Row>& rows, bool has_file, int num_
     update();
 }
 
+void CenterPanel::sync_mode() {
+    const bool unified = table_->unified_mode();
+    pill_review_->setVisible(!unified);
+    if (unified && active_pile_ == "review") set_active_pile("all");
+}
+
 void CenterPanel::update_meta_label() {
+    sync_mode();
     if (!meta_label_) return;
     meta_label_->setText(num_rows_ == 0 ? QString("NO SOURCE")
                                         : QString(table_->unified_mode() ? "%L1 WINDOWS FROM %L2 SOUNDS" : "%L1 PICTURES FROM %L2 SOUNDS")
