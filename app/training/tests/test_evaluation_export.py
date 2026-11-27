@@ -379,3 +379,51 @@ def test_reproduce_script_plans_stages_and_stops_at_first_failure(corpus: dict[s
     entries = [json.loads(x) for x in (corpus["out"] / "reproduce-ledger.jsonl").read_text().splitlines()]
     assert [e["stage"] for e in entries] == ["inventory", "validate-labels"]
     assert entries[0]["exit_code"] == 0 and entries[1]["exit_code"] == code
+
+
+def test_export_has_dynamic_batch_axis_and_validates_batches_1_3_16(tmp_path):
+    import onnx
+
+    torch.manual_seed(0)
+    lm = default_label_map()
+    model = build_model(lm)
+    path = tmp_path / "model.onnx"
+    exp.export_onnx(model, SMALL, path)
+    graph = onnx.load(str(path)).graph
+    for value in (graph.input[0], graph.output[0]):
+        dim0 = value.type.tensor_type.shape.dim[0]
+        assert dim0.dim_param == "batch" and not dim0.HasField("dim_value")
+    report = exp.validate_onnx(model, SMALL, path)
+    assert report["passed"] and report["dynamic_batch"]
+    assert report["batch_sizes"] == [1, 3, 16]
+    assert set(report["max_abs_diff_by_batch"]) == {"1", "3", "16"}
+    assert all(d < 1e-4 for d in report["max_abs_diff_by_batch"].values())
+    assert report["max_abs_diff_alone_vs_batched"] < 1e-4
+    session = exp.ort_session(path)
+    for size in (1, 3, 16):
+        x = np.zeros((size, 1, SMALL.n_bins, SMALL.window_frames), dtype=np.float32)
+        assert session.run([exp.OUTPUT_NAME], {exp.INPUT_NAME: x})[0].shape == (size, len(lm.outputs))
+
+
+def test_static_batch_export_is_refused(tmp_path):
+    import onnx
+
+    torch.manual_seed(0)
+    model = build_model(default_label_map())
+    path = tmp_path / "static.onnx"
+    dummy = torch.zeros(1, 1, SMALL.n_bins, SMALL.window_frames)
+    from whalemix_training.model import ProbabilityHead
+
+    torch.onnx.export(
+        ProbabilityHead(model).eval(),
+        (dummy,),
+        str(path),
+        input_names=[exp.INPUT_NAME],
+        output_names=[exp.OUTPUT_NAME],
+        opset_version=exp.OPSET,
+        dynamo=False,
+    )
+    assert onnx.load(str(path)).graph.input[0].type.tensor_type.shape.dim[0].dim_value == 1
+    with pytest.raises(RuntimeError):
+        exp.ensure_dynamic_batch(path)
+    assert not exp.validate_onnx(model, SMALL, path)["passed"]

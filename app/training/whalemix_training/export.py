@@ -32,25 +32,42 @@ OUTPUT_NAME = "probabilities"
 MODEL_FILE = "model.onnx"
 
 
+VALIDATION_BATCHES = (1, 3, 16)
+
+
 def export_onnx(model: AcousticNet, spec: PreprocessingSpec, path: Path) -> None:
+    """Export with a symbolic batch axis.
+
+    The TorchScript exporter with `dynamic_axes` is used because the dynamo exporter in PyTorch 2.7
+    specialises a batch dimension traced at size 1 to a static `1` (even with `dynamic_shapes`), which
+    the engine's batched inference cannot feed. `ensure_dynamic_batch` refuses any static result.
+    """
     model.eval()
-    dummy = torch.zeros(1, model.in_channels, spec.n_bins, spec.window_frames)
+    dummy = torch.zeros(2, model.in_channels, spec.n_bins, spec.window_frames)
     path.parent.mkdir(parents=True, exist_ok=True)
-    program = torch.onnx.export(
-        ProbabilityHead(model).eval(),
-        (dummy,),
-        input_names=[INPUT_NAME],
-        output_names=[OUTPUT_NAME],
-        dynamic_shapes={"spectrogram": {0: torch.export.Dim("batch", min=1, max=1024)}},
-        opset_version=OPSET,
-        dynamo=True,
-        external_data=False,
-        optimize=True,
-        verbose=False,
-    )
-    if program is None:
-        raise RuntimeError("ONNX export returned no program")
-    program.save(str(path), external_data=False)
+    with torch.no_grad():
+        torch.onnx.export(
+            ProbabilityHead(model).eval(),
+            (dummy,),
+            str(path),
+            input_names=[INPUT_NAME],
+            output_names=[OUTPUT_NAME],
+            dynamic_axes={INPUT_NAME: {0: "batch"}, OUTPUT_NAME: {0: "batch"}},
+            opset_version=OPSET,
+            dynamo=False,
+            do_constant_folding=True,
+            verbose=False,
+        )
+    ensure_dynamic_batch(path)
+
+
+def ensure_dynamic_batch(path: Path) -> None:
+    """Raise unless the graph's input and output batch axes are symbolic."""
+    graph = onnx.load(str(path)).graph
+    for value in (graph.input[0], graph.output[0]):
+        dim0 = value.type.tensor_type.shape.dim[0]
+        if dim0.HasField("dim_value") or not dim0.dim_param:
+            raise RuntimeError(f"ONNX export left a static batch axis on '{value.name}'")
 
 
 def ort_session(path: Path, threads: int = 2) -> ort.InferenceSession:
@@ -74,23 +91,51 @@ def validate_onnx(
         "onnxruntime": ort.__version__,
     }
     gen = torch.Generator().manual_seed(1234)
-    batch = torch.randn(3, model.in_channels, spec.n_bins, spec.window_frames, generator=gen)
     model.eval()
+    batch_diffs: dict[str, float] = {}
+    finite = True
+    width_ok = True
+    largest = max(VALIDATION_BATCHES)
+    full = torch.randn(largest, model.in_channels, spec.n_bins, spec.window_frames, generator=gen)
     with torch.no_grad():
-        ref = torch.sigmoid(model(batch)).numpy()
-    got = session.run([OUTPUT_NAME], {INPUT_NAME: batch.numpy()})[0]
-    alone = session.run([OUTPUT_NAME], {INPUT_NAME: batch[1:2].numpy()})[0]
-    report["max_abs_diff_vs_torch"] = float(np.max(np.abs(ref - got)))
-    report["max_abs_diff_alone_vs_batched"] = float(np.max(np.abs(alone[0] - got[1])))
-    report["finite"] = bool(np.isfinite(got).all())
+        ref_full = torch.sigmoid(model(full)).numpy()
+    got_full = None
+    for size in VALIDATION_BATCHES:
+        batch = full[:size]
+        try:
+            got = session.run([OUTPUT_NAME], {INPUT_NAME: batch.numpy()})[0]
+        except Exception as exc:  # onnxruntime raises on a shape the graph cannot accept
+            report.setdefault("errors", {})[str(size)] = str(exc).splitlines()[0][:300]
+            width_ok = False
+            batch_diffs[str(size)] = float("inf")
+            continue
+        if got.shape != (size, len(model.label_map.outputs)):
+            width_ok = False
+            batch_diffs[str(size)] = float("inf")
+            continue
+        finite = finite and bool(np.isfinite(got).all())
+        batch_diffs[str(size)] = float(np.max(np.abs(ref_full[:size] - got)))
+        if size == largest:
+            got_full = got
+    alone_diff = float("inf")
+    if got_full is not None:
+        alone = session.run([OUTPUT_NAME], {INPUT_NAME: full[1:2].numpy()})[0]
+        alone_diff = float(np.max(np.abs(alone[0] - got_full[1])))
+    report["batch_sizes"] = list(VALIDATION_BATCHES)
+    report["max_abs_diff_by_batch"] = batch_diffs
+    report["max_abs_diff_vs_torch"] = max(batch_diffs.values())
+    report["max_abs_diff_alone_vs_batched"] = alone_diff
+    report["finite"] = finite
     report["names_ok"] = inputs[0].name == INPUT_NAME and outputs[0].name == OUTPUT_NAME
-    report["output_width"] = int(got.shape[1])
+    report["dynamic_batch"] = not str(inputs[0].shape[0]).isdigit() and not str(outputs[0].shape[0]).isdigit()
+    report["output_width"] = len(model.label_map.outputs) if width_ok else -1
     report["passed"] = bool(
         report["names_ok"]
-        and report["finite"]
+        and report["dynamic_batch"]
+        and width_ok
+        and finite
         and report["max_abs_diff_vs_torch"] <= tolerance
         and report["max_abs_diff_alone_vs_batched"] <= tolerance
-        and got.shape[1] == len(model.label_map.outputs)
     )
     return report
 
