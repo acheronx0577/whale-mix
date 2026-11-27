@@ -33,7 +33,21 @@ pub struct RunConfig {
     pub threads: usize,
     pub batch: usize,
     pub allow_fixture: bool,
+    /// Requested compute mode: "auto", "hybrid", "gpu" or "cpu".
+    pub device: String,
     pub run_id: String,
+}
+
+/// Accepted `--device` values.
+pub const DEVICES: [&str; 4] = ["auto", "hybrid", "gpu", "cpu"];
+
+/// The backend that actually runs the model, and why. This build links ONNX Runtime with only the
+/// CPU execution provider, so every mode resolves to CPU and says so; GPU providers are future work.
+pub fn resolve_device(requested: &str) -> (&'static str, &'static str) {
+    match requested {
+        "cpu" => ("cpu", "CPU requested"),
+        _ => ("cpu", "no GPU execution provider in this build; running on CPU"),
+    }
 }
 
 #[derive(Default)]
@@ -379,10 +393,12 @@ pub fn run(
     let mut files_log = BufWriter::new(File::create(&files_path).map_err(io_err)?);
     let m = &bundle.manifest;
     let fixture = m.artifact_kind == "fixture-untrained";
+    let (device_active, device_note) = resolve_device(&cfg.device);
     emitter.emit("started", json!({
         "engine_version": ENGINE_VERSION, "model_sha256": m.model.sha256, "artifact_kind": m.artifact_kind,
         "fixture": fixture, "threads": threads, "batch": cfg.batch, "files_total": total_files,
-        "profiles": cfg.profiles,
+        "profiles": cfg.profiles, "device_requested": cfg.device, "device_active": device_active,
+        "device_note": device_note,
     }));
     emitter.emit(
         "dataset_added",
@@ -591,6 +607,7 @@ pub fn run(
         "model_load_ms": model_load_ms, "first_progress_ms": first_progress_ms, "wall_s": wall_s,
         "audio_s": audio_s_done, "x_realtime": if wall_s > 0.0 { Some(audio_s_done / wall_s) } else { None },
         "inference_s": inference_s, "peak_rss_mb": peak_rss_mb(), "threads": threads, "batch": cfg.batch,
+        "device_requested": cfg.device, "device_active": device_active,
     });
     let canceled = control.canceled();
     let status = if canceled { "canceled" } else { "completed" };

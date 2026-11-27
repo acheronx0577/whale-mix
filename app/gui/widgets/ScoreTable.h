@@ -33,11 +33,24 @@ public:
     void select_first();
     void select_last();
 
+    // Unified WhaleMix light model rows (engine runs): WINDOW, TIME, CONFIDENCE, REASON, LABEL.
+    // Legacy Blue A + Laya CSVs keep the original seven columns. Detected from the first row.
+    void set_unified_mode(bool unified);
+    bool unified_mode() const { return unified_; }
+    int column_count() const { return unified_ ? 5 : 7; }
+    QString column_title(int col) const;
+    // Display text of a row's REASON cell (plain English in unified mode).
+    QString reason_display(size_t model_index) const;
+    int column_left(int col) const { return column_x(col); }
+    int column_span(int col) const { return column_width(col); }
+
     const std::vector<int>& visible_indices() const { return visible_indices_; }
     int visible_count() const { return static_cast<int>(visible_indices_.size()); }
 
 signals:
     void selection_changed(int model_index);
+    // A row was clicked with the mouse (opens the inspector).
+    void row_clicked(int model_index);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -65,11 +78,15 @@ private:
         QString baf;
         QString laya_str;
         QString reason_str;
+        QString reason_plain;
+        QString conf_str;
         QString label_str;
         QSize chip_size;
         std::string search_haystack_lower;
     };
     static CachedRow make_cached_row(const Row& r);
+    void detect_mode();
+    bool unified_ = false;
     std::vector<CachedRow> cached_rows_;
     void update_elided_cache();
     void update_elided_cache(size_t from);
@@ -89,6 +106,11 @@ private:
     static constexpr int kHeaderHeight = 34;
     static constexpr int kRowHeight = 49;
     static constexpr int kColWidths[6] = {136, 146, 84, 84, 116, 88}; // col 6 = rest
+    // WINDOW and TIME keep one width (their elisions are cached); CONFIDENCE and LABEL tighten
+    // when the inspector is open so REASON keeps room. Col 3 (REASON) = rest.
+    static constexpr int kUnifiedWidths[5] = {168, 176, 140, 0, 136};
+    static constexpr int kUnifiedCompactWidths[5] = {168, 176, 108, 0, 112};
+    static constexpr int kCellPad = 16;  // left padding inside every cell, and minimum right padding
 };
 
 } // namespace whalemix::gui

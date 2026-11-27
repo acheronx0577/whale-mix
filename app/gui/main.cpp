@@ -28,6 +28,7 @@ int main(int argc, char* argv[]) {
     QString screenshot_path;
     QString open_path;
     QString select_id;
+    QStringList scan_paths;
 
     for (int i = 1; i < argc; ++i) {
         QString arg = argv[i];
@@ -35,6 +36,8 @@ int main(int argc, char* argv[]) {
             screenshot_path = argv[++i];
         } else if (arg == "--open" && i + 1 < argc) {
             open_path = argv[++i];
+        } else if (arg == "--scan" && i + 1 < argc) {
+            scan_paths << QString::fromLocal8Bit(argv[++i]);  // audio file or folder, same path as a drop
         } else if (arg == "--select" && i + 1 < argc) {
             select_id = argv[++i];
         } else if (!arg.startsWith("--") && open_path.isEmpty()) {
@@ -77,5 +80,6 @@ int main(int argc, char* argv[]) {
     }
 
     window.show();
+    if (!scan_paths.isEmpty()) window.ingest_paths(scan_paths);
     return app.exec();
 }

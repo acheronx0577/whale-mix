@@ -18,10 +18,28 @@ public:
     void set_source_info(const QString& file_name, int num_sounds, int num_pictures);
     void set_has_manual(bool has_manual);
 
+    // Unified WhaleMix light model: plain-English "what it detects" instead of the Laya legend.
+    void set_unified_model(bool unified, double threshold);
+    bool unified_model() const { return unified_; }
+
+    // Scan progress (files_total == 0 hides the section). eta_s < 0 = still estimating.
+    void set_progress(int files_done, int files_total, double eta_s, bool finished);
+    QString progress_text() const;
+    QString eta_display() const;
+    bool progress_visible() const { return files_total_ > 0; }
+
+    // Compute mode: "auto", "hybrid", "gpu" or "cpu". The subtitle reports the active backend.
+    void set_compute_mode(const QString& mode);
+    QString compute_mode() const { return compute_mode_; }
+    void set_compute_backend(const QString& active, int threads, const QString& note);
+    QString compute_subtitle() const;
+    QRect compute_segment_rect(int index) const;  // 0 Auto, 1 Hybrid, 2 GPU, 3 CPU
+
     QSize sizeHint() const override;
 
 signals:
     void pile_filter_changed(const QString& pile);
+    void compute_mode_changed(const QString& mode);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -48,6 +66,23 @@ private:
     bool has_manual_ = false;
 
     QPixmap dither_pixmap_;
+
+    int progress_top() const;
+    int compute_top() const;
+    int source_top() const;
+
+    bool unified_ = false;
+    double threshold_ = 0.897;
+    int files_done_ = 0;
+    int files_total_ = 0;
+    double eta_s_ = -1.0;
+    bool finished_ = false;
+    QString compute_mode_ = "auto";
+    QString active_backend_;
+    int backend_threads_ = 0;
+    QString backend_note_;
+    int hovered_segment_ = -1;
+    int pressed_segment_ = -1;
 };
 
 } // namespace whalemix::gui

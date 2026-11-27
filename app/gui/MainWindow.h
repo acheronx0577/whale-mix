@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QTimer>
+#include <QElapsedTimer>
 
 #include <set>
 #include <string>
@@ -40,6 +41,12 @@ public:
     void set_manual_label(const QString& label);
     void undo_override();
 
+    // Collapsible inspector (right panel): hidden until a row is clicked; x / Esc closes it.
+    void show_inspector();
+    void hide_inspector();
+    bool inspector_visible() const;
+    QWidget* inspector() { return detail_scroll_; }
+
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
@@ -58,6 +65,14 @@ private:
     void refresh_row(int idx, const std::string& old_label);  // coalesced, incremental view refresh while an analysis streams in
 
     QTimer* engine_refresh_timer_ = nullptr;
+    QWidget* detail_scroll_ = nullptr;
+    void set_unified_mode(bool unified);
+    void update_progress(int done, int total, bool finished);
+    QElapsedTimer scan_clock_;
+    double smoothed_rate_ = 0.0;   // files per second (EMA)
+    double last_rate_t_ = 0.0;
+    int last_rate_done_ = 0;
+    int scan_total_ = 0;
     std::set<std::string> engine_sounds_;
     int engine_counts_[3] = {0, 0, 0};  // call, not-call, review over state_.rows()
 

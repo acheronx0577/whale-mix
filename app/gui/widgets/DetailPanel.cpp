@@ -3,6 +3,7 @@
 #include "Fonts.h"
 #include "Eyebrow.h"
 #include "whalemix/format.h"
+#include "DisplayText.h"
 #include <QPainter>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -120,8 +121,38 @@ QRect DetailPanel::play_button_rect() const {
     return QRect(24, 278, 36, 36);
 }
 
+// The time label gets an explicit width (widest "0:00 / 0:00" text) plus an 18px gap, so the
+// scrubber thumb (radius 5.5) always stays >= 12px clear of the duration text.
+QRect DetailPanel::time_label_rect() const {
+    QFontMetrics fm(fonts::mono(12, 450));
+    return QRect(70, 278, fm.horizontalAdvance("0:00 / 0:00") + 2, 36);
+}
+
 QRect DetailPanel::scrub_track_rect() const {
-    return QRect(144, 278 + (36 - 8) / 2, 138, 8);
+    const QRect t = time_label_rect();
+    const int x = t.right() + 1 + 18;
+    const int space_w = Kbd::size_for_key("Space", KbdStyle::Default).width();
+    const int right = width() - 24 - space_w - 16;
+    return QRect(x, 278 + (36 - 8) / 2, qMax(40, right - x), 8);
+}
+
+QRect DetailPanel::close_button_rect() const {
+    return QRect(width() - 24 - 26, 22, 26, 26);
+}
+
+bool DetailPanel::unified_mode() const {
+    return has_row_ && display::is_unified_row(current_row_data_);
+}
+
+QString DetailPanel::why_display_text() const {
+    if (!has_row_) return QString();
+    return unified_mode() ? display::why_long(current_row_data_, threshold_)
+                          : QString::fromStdString(format::why_text(current_row_data_));
+}
+
+// Unified rows show one confidence bar (no baf row), so WHY THIS LABEL moves up.
+int DetailPanel::why_top() const {
+    return 433 + (scores_start_y() - 292) - (unified_mode() ? 26 : 0);
 }
 
 QRect DetailPanel::gain_button_rect(int index) const {
@@ -154,6 +185,10 @@ void DetailPanel::set_row(const Row* row, const QString& csv_folder) {
     set_playing(false);
     playhead_ = 0.0;
     gain_ = 1;
+    {
+        const double len = parse_double(row->picture_end_s) - parse_double(row->picture_start_s);
+        clip_duration_ = (len > 0.5 && len < 600.0) ? len : 6.0;
+    }
 
     if (row->image_file.empty() && !row->audio_path.empty()) {
         spectro_view_->set_audio_window(QString::fromStdString(row->audio_path), parse_double(row->picture_start_s),
@@ -207,12 +242,11 @@ QRect DetailPanel::option_rect(int index) const {
     if (!has_row_) return QRect();
 
     QFont why_font = fonts::body(14);
-    QString why_str = QString::fromStdString(format::why_text(current_row_data_));
+    QString why_str = why_display_text();
     QFontMetrics fm_why(why_font);
     QRect bound = fm_why.boundingRect(QRect(24, 0, 332, 300), Qt::TextWordWrap | Qt::AlignLeft, why_str);
 
-    int delta = scores_start_y() - 292;
-    int why_y = 433 + delta;
+    int why_y = why_top();
     int reason_y = why_y + bound.height() + 9;
     int set_label_y = reason_y + 18 + 19;
     int options_start_y = set_label_y + 14 + 12;
@@ -241,6 +275,14 @@ void DetailPanel::mouseMoveEvent(QMouseEvent* event) {
         }
     }
 
+    const bool hc = close_button_rect().contains(event->pos());
+    if (hc != hovered_close_) {
+        hovered_close_ = hc;
+        setCursor(hc ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        update();
+    }
+    if (hc) return;
+
     int hovered_player = -1;
     if (play_button_rect().contains(event->pos())) {
         hovered_player = 0;
@@ -268,6 +310,8 @@ void DetailPanel::leaveEvent(QEvent* /*event*/) {
     if (hovered_option_ >= 0 || pressed_option_ >= 0 || hovered_player_item_ >= 0 || pressed_player_item_ >= 0 || scrubbing_) {
         hovered_option_ = -1;
         pressed_option_ = -1;
+        hovered_close_ = false;
+        pressed_close_ = false;
         hovered_player_item_ = -1;
         pressed_player_item_ = -1;
         scrubbing_ = false;
@@ -278,6 +322,12 @@ void DetailPanel::leaveEvent(QEvent* /*event*/) {
 
 void DetailPanel::mousePressEvent(QMouseEvent* event) {
     if (!has_row_ || event->button() != Qt::LeftButton) return;
+
+    if (close_button_rect().contains(event->pos())) {
+        pressed_close_ = true;
+        update();
+        return;
+    }
 
     if (play_button_rect().contains(event->pos())) {
         pressed_player_item_ = 0;
@@ -321,6 +371,13 @@ void DetailPanel::mouseReleaseEvent(QMouseEvent* event) {
     scrubbing_ = false;
     pressed_player_item_ = -1;
 
+    if (pressed_close_) {
+        pressed_close_ = false;
+        update();
+        if (close_button_rect().contains(event->pos())) emit close_requested();
+        return;
+    }
+
     if (pressed_option_ >= 0) {
         int pressed = pressed_option_;
         pressed_option_ = -1;
@@ -361,7 +418,20 @@ void DetailPanel::paintEvent(QPaintEvent* /*event*/) {
     // Current label Chip on right
     QString current_label = QString::fromStdString(current_row_data_.mix_label);
     QSize chip_sz = Chip::size_for_label(current_label);
-    Chip::paint(&p, QRect(width() - 24 - chip_sz.width(), 24, chip_sz.width(), 22), current_label);
+    const QRect close_r = close_button_rect();
+    Chip::paint(&p, QRect(close_r.x() - 12 - chip_sz.width(), 24, chip_sz.width(), 22), current_label);
+
+    // Close (x) button: collapses the inspector (Esc does the same)
+    {
+        QRectF cr(close_r.x() + 0.5, close_r.y() + 0.5, close_r.width() - 1.0, close_r.height() - 1.0);
+        p.setPen(QPen(hovered_close_ || pressed_close_ ? theme::kAir : theme::kLine, 1.0));
+        p.setBrush(pressed_close_ ? theme::kMist : (hovered_close_ ? theme::kPaper : QColor(Qt::white)));
+        p.drawRoundedRect(cr, 7.0, 7.0);
+        const QPointF c = cr.center();
+        p.setPen(QPen(hovered_close_ ? theme::kDeep : theme::kInk, 1.6, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(c + QPointF(-4.5, -4.5), c + QPointF(4.5, 4.5));
+        p.drawLine(c + QPointF(-4.5, 4.5), c + QPointF(4.5, -4.5));
+    }
 
     // 2. Title at y = 54
     QFont title_font = fonts::heading(27);
@@ -375,8 +445,14 @@ void DetailPanel::paintEvent(QPaintEvent* /*event*/) {
     QFont sub_font = fonts::mono(13, 450);
     p.setFont(sub_font);
     p.setPen(theme::kSlate);
-    QString sub_text = QString("%1 \xc2\xb7 %2").arg(QString::fromStdString(current_row_data_.sample_id)).arg(QString::fromStdString(format::time_text(current_row_data_)));
-    p.drawText(QRect(24, 97, 332, 18), Qt::AlignLeft | Qt::AlignVCenter, sub_text);
+    // File name is elided in the middle so the time always stays visible inside the 332px column.
+    {
+        QFontMetrics fm_sub(sub_font);
+        const QString time_part = QString(" \xc2\xb7 %1").arg(QString::fromStdString(format::time_text(current_row_data_)));
+        const int name_w = qMax(40, 332 - fm_sub.horizontalAdvance(time_part));
+        const QString name = fm_sub.elidedText(QString::fromStdString(current_row_data_.sample_id), Qt::ElideMiddle, name_w);
+        p.drawText(QRect(24, 97, 332, 18), Qt::AlignLeft | Qt::AlignVCenter, name + time_part);
+    }
 
     // SpectrogramView is placed as a child widget at (24, 138, 332, 130)
 
@@ -408,13 +484,15 @@ void DetailPanel::paintEvent(QPaintEvent* /*event*/) {
 
         // Time text: 0:0X / 0:06
         int cur_sec = static_cast<int>(playhead_ * clip_duration_);
-        QString time_str = QString("0:%1 / 0:06").arg(cur_sec, 2, 10, QChar('0'));
+        int tot_sec = static_cast<int>(clip_duration_);
+        QString time_str = QString("%1:%2 / %3:%4").arg(cur_sec / 60).arg(cur_sec % 60, 2, 10, QChar('0'))
+                               .arg(tot_sec / 60).arg(tot_sec % 60, 2, 10, QChar('0'));
         QFont time_font = fonts::mono(12, 450);
         p.setFont(time_font);
         p.setPen(theme::kSlate);
         QFontMetrics fm_time(time_font);
         int time_y = r_play.y() + (36 - fm_time.height()) / 2 + fm_time.ascent();
-        p.drawText(68, time_y, time_str);
+        p.drawText(time_label_rect().x(), time_y, time_str);
 
         // Scrub track
         QRect r_scrub = scrub_track_rect();
@@ -504,102 +582,145 @@ void DetailPanel::paintEvent(QPaintEvent* /*event*/) {
 
     int delta = scores_start_y() - 292;
 
-    // 4. BLUE A SCORES
-    Eyebrow::paint(&p, QRect(24, 292 + delta, 332, 14), "BLUE A SCORES");
-
-    // Block 1: bat
-    int bat_y = 314 + delta;
-    {
-        // Text row
-        QFont bold_font = fonts::mono(13, 450);
-        QFont normal_font = fonts::body(14);
+    if (unified_mode()) {
+        // 4. MODEL CONFIDENCE: one bar for the unified light model (no baf / Laya rows)
+        Eyebrow::paint(&p, QRect(24, 292 + delta, 332, 14), "MODEL CONFIDENCE");
+        const int bat_y = 314 + delta;
+        QFont name_font = fonts::body(14);
         QFont num_font = fonts::mono(13, 450);
-
-        p.setFont(bold_font);
-        p.setPen(theme::kInk);
-        QFontMetrics fm_bold(bold_font);
-        p.drawText(24, bat_y + fm_bold.ascent(), "bat");
-
-        p.setFont(normal_font);
-        p.setPen(theme::kSlate);
-        QFontMetrics fm_norm(normal_font);
-        int call_x = 24 + fm_bold.horizontalAdvance("bat ");
-        p.drawText(call_x, bat_y + fm_norm.ascent(), "call score");
-
-        // Value on right
-        p.setFont(num_font);
-        p.setPen(theme::kInk);
+        QFontMetrics fm_name(name_font);
         QFontMetrics fm_num(num_font);
-        QString val_str = QString::fromStdString(current_row_data_.bat);
+        p.setFont(name_font);
+        p.setPen(theme::kInk);
+        p.drawText(24, bat_y + fm_name.ascent(), "Blue whale A-call");
+        p.setFont(num_font);
+        const QString val_str = display::confidence_text(current_row_data_);
         p.drawText(width() - 24 - fm_num.horizontalAdvance(val_str), bat_y + fm_num.ascent(), val_str);
 
-        // 6px Track at y = 341 + delta
         p.setPen(Qt::NoPen);
         p.setBrush(theme::kMist);
         p.drawRoundedRect(QRectF(24.0, 341.0 + delta, 332.0, 6.0), 3.0, 3.0);
-
-        // Fill deep
         int fill_w = static_cast<int>(qMin(1.0, qMax(0.0, bat_anim_val_)) * 332.0);
         if (fill_w > 0) {
             p.setBrush(theme::kDeep);
             p.drawRoundedRect(QRectF(24.0, 341.0 + delta, static_cast<qreal>(fill_w), 6.0), 3.0, 3.0);
         }
-    }
-
-    // Block 2: baf
-    int baf_y = 359 + delta;
-    {
-        QFont bold_font = fonts::mono(13, 450);
-        QFont normal_font = fonts::body(14);
-        QFont num_font = fonts::mono(13, 450);
-
-        p.setFont(bold_font);
-        p.setPen(theme::kInk);
-        QFontMetrics fm_bold(bold_font);
-        p.drawText(24, baf_y + fm_bold.ascent(), "baf");
-
-        p.setFont(normal_font);
+        // Threshold tick + caption
+        const double tx = 24.0 + qBound(0.0, threshold_, 1.0) * 332.0;
+        p.setPen(QPen(theme::kInk, 1.5));
+        p.drawLine(QPointF(tx, 337.0 + delta), QPointF(tx, 351.0 + delta));
+        QFont cap_font = fonts::mono(11, 450);
+        QFontMetrics fm_cap(cap_font);
+        p.setFont(cap_font);
         p.setPen(theme::kSlate);
-        QFontMetrics fm_norm(normal_font);
-        int call_x = 24 + fm_bold.horizontalAdvance("baf ");
-        p.drawText(call_x, baf_y + fm_norm.ascent(), "not-a-call score");
-
-        // Value on right
-        p.setFont(num_font);
-        p.setPen(theme::kInk);
-        QFontMetrics fm_num(num_font);
-        QString val_str = QString::fromStdString(current_row_data_.baf);
-        p.drawText(width() - 24 - fm_num.horizontalAdvance(val_str), baf_y + fm_num.ascent(), val_str);
-
-        // 6px Track at y = 386 + delta
-        p.setPen(Qt::NoPen);
-        p.setBrush(theme::kMist);
-        p.drawRoundedRect(QRectF(24.0, 386.0 + delta, 332.0, 6.0), 3.0, 3.0);
-
-        // Fill air
-        int fill_w = static_cast<int>(qMin(1.0, qMax(0.0, baf_anim_val_)) * 332.0);
-        if (fill_w > 0) {
-            p.setBrush(theme::kAir);
-            p.drawRoundedRect(QRectF(24.0, 386.0 + delta, static_cast<qreal>(fill_w), 6.0), 3.0, 3.0);
+        const QString cap = QString("call threshold %1").arg(display::percent(threshold_));
+        p.drawText(width() - 24 - fm_cap.horizontalAdvance(cap), 354 + delta + fm_cap.ascent(), cap);
+    } else {
+    // 4. BLUE A SCORES
+        Eyebrow::paint(&p, QRect(24, 292 + delta, 332, 14), "BLUE A SCORES");
+    
+        // Block 1: bat
+        int bat_y = 314 + delta;
+        {
+            // Text row
+            QFont bold_font = fonts::mono(13, 450);
+            QFont normal_font = fonts::body(14);
+            QFont num_font = fonts::mono(13, 450);
+    
+            p.setFont(bold_font);
+            p.setPen(theme::kInk);
+            QFontMetrics fm_bold(bold_font);
+            p.drawText(24, bat_y + fm_bold.ascent(), "bat");
+    
+            p.setFont(normal_font);
+            p.setPen(theme::kSlate);
+            QFontMetrics fm_norm(normal_font);
+            int call_x = 24 + fm_bold.horizontalAdvance("bat ");
+            p.drawText(call_x, bat_y + fm_norm.ascent(), "call score");
+    
+            // Value on right
+            p.setFont(num_font);
+            p.setPen(theme::kInk);
+            QFontMetrics fm_num(num_font);
+            QString val_str = QString::fromStdString(current_row_data_.bat);
+            p.drawText(width() - 24 - fm_num.horizontalAdvance(val_str), bat_y + fm_num.ascent(), val_str);
+    
+            // 6px Track at y = 341 + delta
+            p.setPen(Qt::NoPen);
+            p.setBrush(theme::kMist);
+            p.drawRoundedRect(QRectF(24.0, 341.0 + delta, 332.0, 6.0), 3.0, 3.0);
+    
+            // Fill deep
+            int fill_w = static_cast<int>(qMin(1.0, qMax(0.0, bat_anim_val_)) * 332.0);
+            if (fill_w > 0) {
+                p.setBrush(theme::kDeep);
+                p.drawRoundedRect(QRectF(24.0, 341.0 + delta, static_cast<qreal>(fill_w), 6.0), 3.0, 3.0);
+            }
+        }
+    
+        // Block 2: baf
+        int baf_y = 359 + delta;
+        {
+            QFont bold_font = fonts::mono(13, 450);
+            QFont normal_font = fonts::body(14);
+            QFont num_font = fonts::mono(13, 450);
+    
+            p.setFont(bold_font);
+            p.setPen(theme::kInk);
+            QFontMetrics fm_bold(bold_font);
+            p.drawText(24, baf_y + fm_bold.ascent(), "baf");
+    
+            p.setFont(normal_font);
+            p.setPen(theme::kSlate);
+            QFontMetrics fm_norm(normal_font);
+            int call_x = 24 + fm_bold.horizontalAdvance("baf ");
+            p.drawText(call_x, baf_y + fm_norm.ascent(), "not-a-call score");
+    
+            // Value on right
+            p.setFont(num_font);
+            p.setPen(theme::kInk);
+            QFontMetrics fm_num(num_font);
+            QString val_str = QString::fromStdString(current_row_data_.baf);
+            p.drawText(width() - 24 - fm_num.horizontalAdvance(val_str), baf_y + fm_num.ascent(), val_str);
+    
+            // 6px Track at y = 386 + delta
+            p.setPen(Qt::NoPen);
+            p.setBrush(theme::kMist);
+            p.drawRoundedRect(QRectF(24.0, 386.0 + delta, 332.0, 6.0), 3.0, 3.0);
+    
+            // Fill air
+            int fill_w = static_cast<int>(qMin(1.0, qMax(0.0, baf_anim_val_)) * 332.0);
+            if (fill_w > 0) {
+                p.setBrush(theme::kAir);
+                p.drawRoundedRect(QRectF(24.0, 386.0 + delta, static_cast<qreal>(fill_w), 6.0), 3.0, 3.0);
+            }
         }
     }
 
     // 5. WHY THIS LABEL
-    Eyebrow::paint(&p, QRect(24, 411 + delta, 332, 14), "WHY THIS LABEL");
+    Eyebrow::paint(&p, QRect(24, why_top() - 22, 332, 14), "WHY THIS LABEL");
 
     QFont why_font = fonts::body(14);
     p.setFont(why_font);
     p.setPen(theme::kInk);
-    QString why_str = QString::fromStdString(format::why_text(current_row_data_));
-    QRect why_bound = p.boundingRect(QRect(24, 433 + delta, 332, 300), Qt::TextWordWrap | Qt::AlignLeft, why_str);
+    QString why_str = why_display_text();
+    QRect why_bound = p.boundingRect(QRect(24, why_top(), 332, 300), Qt::TextWordWrap | Qt::AlignLeft, why_str);
     p.drawText(why_bound, Qt::TextWordWrap | Qt::AlignLeft, why_str);
 
     // reason: <mix_reason> in mono 13 deep
     int reason_y = why_bound.bottom() + 9;
-    QFont reason_font = fonts::mono(13, 450);
-    p.setFont(reason_font);
-    p.setPen(theme::kDeep);
-    p.drawText(QRect(24, reason_y, 332, 18), Qt::AlignLeft | Qt::AlignVCenter, QString("reason: %1").arg(QString::fromStdString(current_row_data_.mix_reason)));
+    if (unified_mode()) {
+        p.setFont(fonts::body(13));
+        p.setPen(theme::kDeep);
+        p.drawText(QRect(24, reason_y, 332, 18), Qt::AlignLeft | Qt::AlignVCenter, display::decided_by(current_row_data_));
+    } else {
+        QFont reason_font = fonts::mono(13, 450);
+        QFontMetrics fm_reason(reason_font);
+        p.setFont(reason_font);
+        p.setPen(theme::kDeep);
+        p.drawText(QRect(24, reason_y, 332, 18), Qt::AlignLeft | Qt::AlignVCenter,
+                   fm_reason.elidedText(QString("reason: %1").arg(QString::fromStdString(current_row_data_.mix_reason)), Qt::ElideRight, 332));
+    }
 
     // 6. SET LABEL
     int set_label_y = reason_y + 18 + 19;

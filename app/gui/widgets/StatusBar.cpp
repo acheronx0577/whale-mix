@@ -32,12 +32,12 @@ void StatusBar::paintEvent(QPaintEvent* /*event*/) {
     p.setPen(QPen(theme::kLine, 1.0));
     p.drawLine(0, 0, width(), 0);
 
-    // Right version text: "v0.2 · BLUE A + LAYA" (mono 11px, .1em, slate)
+    // Right version text: "v0.2 · BLUE A + LAYA" or "v0.2 · WHALEMIX LIGHT" (mono 11px, .1em, slate)
     QFont ver_font = fonts::mono(11, 450, 0.1);
     p.setFont(ver_font);
     p.setPen(theme::kSlate);
     QFontMetrics fm_ver(ver_font);
-    QString ver_text = "v0.2 · BLUE A + LAYA";
+    const QString& ver_text = version_;
     int ver_w = fm_ver.horizontalAdvance(ver_text);
     int ver_x = width() - 24 - ver_w;
     int ver_y = 1 + (35 - fm_ver.height()) / 2 + fm_ver.ascent();

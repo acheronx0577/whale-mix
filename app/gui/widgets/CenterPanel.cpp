@@ -89,6 +89,7 @@ CenterPanel::CenterPanel(QWidget* parent) : QWidget(parent) {
 
     // Connect selection
     connect(table_, &ScoreTable::selection_changed, this, &CenterPanel::selection_changed);
+    connect(table_, &ScoreTable::row_clicked, this, &CenterPanel::row_clicked);
 }
 
 void CenterPanel::set_active_pile(const QString& pile) {
@@ -130,7 +131,8 @@ void CenterPanel::set_rows(const std::vector<Row>& rows, bool has_file, int num_
 void CenterPanel::update_meta_label() {
     if (!meta_label_) return;
     meta_label_->setText(num_rows_ == 0 ? QString("NO SOURCE")
-                                        : QString("%L1 PICTURES FROM %L2 SOUNDS").arg(num_rows_).arg(num_sounds_));
+                                        : QString(table_->unified_mode() ? "%L1 WINDOWS FROM %L2 SOUNDS" : "%L1 PICTURES FROM %L2 SOUNDS")
+                                              .arg(num_rows_).arg(num_sounds_));
 }
 
 void CenterPanel::append_rows(const std::vector<Row>& rows, size_t from, bool has_file, int num_sounds) {

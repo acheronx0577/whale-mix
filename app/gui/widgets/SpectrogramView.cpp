@@ -376,8 +376,9 @@ void SpectrogramView::paintEvent(QPaintEvent* /*event*/) {
         break;
     case State::Loading:
     case State::Loaded:
-        cap_text = audio_caption_.isEmpty() ? QString("image_file: %1").arg(image_file_) : audio_caption_;
-        break;
+        // No caption over a loaded picture: the inspector already shows the file and time right
+        // above the spectrogram, and a banner here hid part of the call.
+        return;
     }
 
     QFont cap_font = fonts::mono(13, 450);

@@ -33,6 +33,7 @@ public:
 signals:
     void pile_filter_changed(const QString& pile);
     void selection_changed(int model_index);
+    void row_clicked(int model_index);
 
 protected:
     void paintEvent(QPaintEvent* event) override;

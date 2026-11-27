@@ -3,6 +3,7 @@
 #include "Fonts.h"
 #include "Chip.h"
 #include "whalemix/format.h"
+#include "DisplayText.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
@@ -51,6 +52,8 @@ ScoreTable::CachedRow ScoreTable::make_cached_row(const Row& r) {
     c.baf = QString::fromStdString(r.baf);
     c.laya_str = QString::fromStdString(format::laya_text(r));
     c.reason_str = QString::fromStdString(r.mix_reason);
+    c.reason_plain = display::reason_short(r);
+    c.conf_str = display::confidence_text(r);
     c.label_str = QString::fromStdString(r.mix_label);
     c.chip_size = Chip::size_for_label(c.label_str);
     c.search_haystack_lower = format::search_haystack(r);
@@ -75,9 +78,33 @@ void ScoreTable::update_row(size_t idx, const Row& row) {
     }
 }
 
+void ScoreTable::detect_mode() {
+    if (!all_rows_.empty()) unified_ = display::is_unified_row(all_rows_.front());
+}
+
+void ScoreTable::set_unified_mode(bool unified) {
+    if (unified_ == unified) return;
+    unified_ = unified;
+    update_elided_cache();
+    viewport()->update();
+}
+
+QString ScoreTable::column_title(int col) const {
+    static const char* legacy[7] = {"WINDOW", "TIME", "BAT", "BAF", "LAYA", "REASON", "LABEL"};
+    static const char* unified[5] = {"WINDOW", "TIME", "CONFIDENCE", "REASON", "LABEL"};
+    if (col < 0 || col >= column_count()) return QString();
+    return QString::fromLatin1(unified_ ? unified[col] : legacy[col]);
+}
+
+QString ScoreTable::reason_display(size_t model_index) const {
+    if (model_index >= cached_rows_.size()) return QString();
+    return unified_ ? cached_rows_[model_index].reason_plain : cached_rows_[model_index].reason_str;
+}
+
 void ScoreTable::set_rows(const std::vector<Row>& rows, bool has_file) {
     all_rows_ = rows;
     has_file_ = has_file;
+    detect_mode();
 
     cached_rows_.clear();
     cached_rows_.reserve(all_rows_.size());
@@ -94,6 +121,11 @@ void ScoreTable::append_rows(const std::vector<Row>& rows, size_t from, bool has
         return;
     }
     const size_t first_new = all_rows_.size();
+    if (first_new == 0 && from < rows.size()) {
+        const bool was = unified_;
+        unified_ = display::is_unified_row(rows[from]);
+        if (was != unified_) viewport()->update();
+    }
     all_rows_.insert(all_rows_.end(), rows.begin() + static_cast<std::ptrdiff_t>(from), rows.end());
     for (size_t i = first_new; i < all_rows_.size(); ++i) cache_row(all_rows_[i]);
     update_elided_cache(first_new);
@@ -332,13 +364,18 @@ int ScoreTable::row_at_pos(int y) const {
 
 int ScoreTable::column_x(int col) const {
     int x = 0;
-    for (int i = 0; i < col && i < 6; ++i) {
-        x += kColWidths[i];
-    }
+    for (int i = 0; i < col && i < column_count(); ++i) x += column_width(i);
     return x;
 }
 
 int ScoreTable::column_width(int col) const {
+    if (unified_) {
+        if (col < 0 || col > 4) return 0;
+        const int* wv = viewport()->width() < 1000 ? kUnifiedCompactWidths : kUnifiedWidths;
+        if (col != 3) return wv[col];
+        const int fixed = wv[0] + wv[1] + wv[2] + wv[4];
+        return qMax(150, viewport()->width() - fixed);
+    }
     if (col >= 0 && col < 6) {
         return kColWidths[col];
     }
@@ -379,6 +416,7 @@ void ScoreTable::mousePressEvent(QMouseEvent* event) {
         if (row >= 0 && row < static_cast<int>(visible_indices_.size())) {
             pressed_visible_row_ = row;
             select_model_index(visible_indices_[row]);
+            emit row_clicked(visible_indices_[row]);
             viewport()->update();
         }
     }
@@ -420,18 +458,16 @@ void ScoreTable::paintEvent(QPaintEvent* /*event*/) {
         p.setPen(theme::kSlate);
         QFontMetrics fm_hdr(header_font);
 
-        const char* titles[7] = {"WINDOW", "TIME", "BAT", "BAF", "LAYA", "REASON", "LABEL"};
-        for (int col = 0; col < 7; ++col) {
+        for (int col = 0; col < column_count(); ++col) {
             int cx = column_x(col);
-            int cw = column_width(col);
             int ty = (kHeaderHeight - fm_hdr.height()) / 2 + fm_hdr.ascent();
-            p.drawText(cx + 16, ty, titles[col]);
+            p.drawText(cx + kCellPad, ty, column_title(col));
         }
 
         // Empty message
         QString empty_msg;
         if (!has_file_) {
-            empty_msg = "Open a Blue A score CSV.";
+            empty_msg = unified_ ? "Scanning\u2026 detections appear here as files finish." : "Open a Blue A score CSV.";
         } else if (all_rows_.empty()) {
             empty_msg = "No scored windows in this file.";
         } else {
@@ -508,6 +544,23 @@ void ScoreTable::paintEvent(QPaintEvent* /*event*/) {
             p.drawText(cx + 16, ty, cached.time_str_elided);
         }
 
+        if (unified_) {
+            // Col 2: CONFIDENCE (Blue A score as a percentage)
+            p.setFont(text_font);
+            p.setPen(theme::kInk);
+            p.drawText(column_x(2) + kCellPad, ty, cached.conf_str);
+
+            // Col 3: REASON, elided so at least kCellPad px stay clear before the LABEL pill
+            const int reason_w = qMax(10, column_width(3) - 2 * kCellPad);
+            p.setPen(theme::kSlate);
+            p.drawText(column_x(3) + kCellPad, ty, fm_text.elidedText(cached.reason_plain, Qt::ElideRight, reason_w));
+
+            // Col 4: LABEL (Chip)
+            const int chip_y = row_y + (kRowHeight - 22) / 2;
+            Chip::paint(&p, QRect(column_x(4) + kCellPad, chip_y, cached.chip_size.width(), 22), cached.label_str);
+            continue;
+        }
+
         // Col 2: BAT
         {
             int cx = column_x(2);
@@ -537,7 +590,7 @@ void ScoreTable::paintEvent(QPaintEvent* /*event*/) {
             int cx = column_x(5);
             p.setFont(text_font);
             p.setPen(theme::kSlate);
-            p.drawText(cx + 16, ty, cached.reason_str);
+            p.drawText(cx + 16, ty, fm_text.elidedText(cached.reason_str, Qt::ElideRight, qMax(10, column_width(5) - 32)));
         }
 
         // Col 6: LABEL (Chip)
@@ -558,11 +611,10 @@ void ScoreTable::paintEvent(QPaintEvent* /*event*/) {
     p.setPen(theme::kSlate);
     QFontMetrics fm_hdr(header_font);
 
-    const char* titles[7] = {"WINDOW", "TIME", "BAT", "BAF", "LAYA", "REASON", "LABEL"};
-    for (int col = 0; col < 7; ++col) {
+    for (int col = 0; col < column_count(); ++col) {
         int cx = column_x(col);
         int ty = (kHeaderHeight - fm_hdr.height()) / 2 + fm_hdr.ascent();
-        p.drawText(cx + 16, ty, titles[col]);
+        p.drawText(cx + kCellPad, ty, column_title(col));
     }
 
     p.restore();

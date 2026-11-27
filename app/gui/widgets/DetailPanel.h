@@ -30,6 +30,15 @@ public:
     void set_playhead(double fraction);
     double playhead() const { return playhead_; }
 
+    // Blue A decision threshold of the active model bundle (plain-English WHY text).
+    void set_threshold(double t) { threshold_ = t; update(); }
+    double threshold() const { return threshold_; }
+    bool unified_mode() const;
+    QString why_display_text() const;
+    QRect close_button_rect() const;
+    QRect time_label_rect() const;
+    QRect scrub_track_geometry() const { return scrub_track_rect(); }
+
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
     int content_height() const;
@@ -37,6 +46,7 @@ public:
 signals:
     void label_selected(const QString& label);
     void export_requested();
+    void close_requested();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -78,6 +88,10 @@ private:
     int hovered_player_item_ = -1; // 0 = play, 1 = scrub, 2 = 1x, 3 = 2x, 4 = 4x, 5 = 8x
     int pressed_player_item_ = -1;
     bool scrubbing_ = false;
+    bool hovered_close_ = false;
+    bool pressed_close_ = false;
+    double threshold_ = 0.897;
+    int why_top() const;
 };
 
 } // namespace whalemix::gui

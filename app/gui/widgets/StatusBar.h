@@ -12,6 +12,8 @@ public:
 
     void set_status(const QString& msg);
     QString status() const { return status_; }
+    void set_version_text(const QString& text) { version_ = text; update(); }
+    QString version_text() const { return version_; }
 
     QSize sizeHint() const override;
 
@@ -20,6 +22,7 @@ protected:
 
 private:
     QString status_ = "Open a Blue A score CSV.";
+    QString version_ = QString::fromUtf8("v0.2 \xc2\xb7 BLUE A + LAYA");
 };
 
 } // namespace whalemix::gui

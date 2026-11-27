@@ -28,6 +28,7 @@ fn config(
         threads: 2,
         batch: 8,
         allow_fixture: true,
+        device: "auto".into(),
         run_id: "test".into(),
     }
 }

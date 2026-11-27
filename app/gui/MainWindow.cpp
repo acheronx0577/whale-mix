@@ -24,6 +24,7 @@
 #include <QFutureWatcher>
 #include <QtConcurrent/QtConcurrentRun>
 #include <set>
+#include "DisplayText.h"
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -78,7 +79,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     body_layout->addWidget(center_panel_, 1);
 
     auto* detail_scroll = new QScrollArea(body);
-    detail_scroll->setFixedWidth(380);
+    // 380px panel + room for the 8px scrollbar, so a long inspector never clips its right edge.
+    detail_scroll->setFixedWidth(392);
     detail_scroll->setFrameShape(QFrame::NoFrame);
     detail_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     detail_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -108,6 +110,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     detail_panel_ = new gui::DetailPanel(detail_scroll);
     detail_scroll->setWidget(detail_panel_);
     body_layout->addWidget(detail_scroll);
+    detail_scroll_ = detail_scroll;
+    detail_scroll_->hide();  // collapsed until the user clicks a row
 
     layout->addWidget(body);
 
@@ -155,6 +159,22 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
     connect(top_bar_, &gui::TopBar::export_requested, this, &MainWindow::export_report);
 
+    // Collapsible inspector: a mouse click on a row pops it open; its x button collapses it.
+    connect(center_panel_, &gui::CenterPanel::row_clicked, this, [this](int) { show_inspector(); });
+    connect(detail_panel_, &gui::DetailPanel::close_requested, this, &MainWindow::hide_inspector);
+
+    // Compute mode (Auto / Hybrid / GPU / CPU), remembered across launches
+    {
+        QSettings settings;
+        const QString mode = settings.value("compute_mode", "auto").toString();
+        sidebar_->set_compute_mode(mode);
+    }
+    connect(sidebar_, &gui::Sidebar::compute_mode_changed, this, [this](const QString& mode) {
+        QSettings().setValue("compute_mode", mode);
+        engine_->set_device(mode);
+        status_bar_->set_status(QString("Compute mode set to %1; it applies to the next scan.").arg(mode.toUpper()));
+    });
+
     // DetailPanel label override
     connect(detail_panel_, &gui::DetailPanel::label_selected, this, &MainWindow::set_manual_label);
 
@@ -166,6 +186,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(engine_refresh_timer_, &QTimer::timeout, this, &MainWindow::flush_engine_view);
 
     engine_ = new EngineBridge(this);  // no worker process starts until audio is queued
+    engine_->set_device(sidebar_->compute_mode());
     connect_engine();
 }
 
@@ -173,16 +194,68 @@ void MainWindow::set_engine_bridge(EngineBridge* bridge) {
     if (engine_ && engine_ != bridge) engine_->deleteLater();
     engine_ = bridge;
     engine_->setParent(this);
+    engine_->set_device(sidebar_->compute_mode());
     connect_engine();
 }
 
+void MainWindow::show_inspector() {
+    if (detail_scroll_ && !detail_scroll_->isVisible()) detail_scroll_->show();
+}
+
+void MainWindow::hide_inspector() {
+    if (detail_scroll_ && detail_scroll_->isVisible()) detail_scroll_->hide();
+    detail_panel_->set_playing(false);
+}
+
+bool MainWindow::inspector_visible() const { return detail_scroll_ && !detail_scroll_->isHidden(); }
+
+void MainWindow::set_unified_mode(bool unified) {
+    const double thr = unified ? engine_->model_status().blue_a_threshold : gui::display::kDefaultBlueAThreshold;
+    center_panel_->table()->set_unified_mode(unified);
+    sidebar_->set_unified_model(unified, thr);
+    detail_panel_->set_threshold(thr);
+    status_bar_->set_version_text(unified ? QString::fromUtf8("v0.2 \xc2\xb7 WHALEMIX LIGHT")
+                                          : QString::fromUtf8("v0.2 \xc2\xb7 BLUE A + LAYA"));
+}
+
+// Smoothed ETA: an exponential moving average of the files/second rate, sampled at most once a
+// second, blended with the run's overall average so early bursts do not swing the estimate.
+void MainWindow::update_progress(int done, int total, bool finished) {
+    scan_total_ = total;
+    double eta = -1.0;
+    if (!finished && total > 0 && scan_clock_.isValid()) {
+        const double t = scan_clock_.elapsed() / 1000.0;
+        if (t - last_rate_t_ >= 1.0 && done > last_rate_done_) {
+            const double inst = (done - last_rate_done_) / (t - last_rate_t_);
+            smoothed_rate_ = smoothed_rate_ > 0.0 ? 0.7 * smoothed_rate_ + 0.3 * inst : inst;
+            last_rate_t_ = t;
+            last_rate_done_ = done;
+        }
+        const double overall = t > 0.0 ? done / t : 0.0;
+        const double rate = smoothed_rate_ > 0.0 ? 0.5 * smoothed_rate_ + 0.5 * overall : overall;
+        if (done > 0 && rate > 0.0 && t >= 2.0) eta = (total - done) / rate;
+    }
+    sidebar_->set_progress(done, total, eta, finished);
+}
+
 void MainWindow::connect_engine() {
+    connect(engine_, &EngineBridge::backend_reported, this,
+            [this](const QString&, const QString& active, int threads, const QString& note) {
+                sidebar_->set_compute_backend(active, threads, note);
+            });
     connect(engine_, &EngineBridge::model_unavailable, this, [this](const QString& reason) {
         status_bar_->set_status(QString("Model unavailable: %1. CSV viewing still works.").arg(reason));
     });
     connect(engine_, &EngineBridge::run_started, this, [this](const QString& run_dir, int total) {
         // Engine results replace the table; they are written under the run directory, not a CSV.
         state_.set_rows({}, QDir(run_dir).filePath("out/results.partial.jsonl"));
+        set_unified_mode(true);
+        hide_inspector();  // a new scan starts with the table at full width
+        scan_clock_.start();
+        smoothed_rate_ = 0.0;
+        last_rate_t_ = 0.0;
+        last_rate_done_ = 0;
+        update_progress(0, total, false);
         top_bar_->set_file_name(QFileInfo(run_dir).fileName());
         sidebar_->set_source_info(QFileInfo(run_dir).fileName(), 0, 0);
         update_all_views();
@@ -190,6 +263,7 @@ void MainWindow::connect_engine() {
     });
     connect(engine_, &EngineBridge::rows_committed, this, [this](qint64) { append_engine_rows(); });
     connect(engine_, &EngineBridge::progress, this, [this](int done, int total, qint64 windows) {
+        update_progress(done, total, false);
         status_bar_->set_status(QString("Analyzing audio: %1 of %2 files, %3 windows, %4 results committed")
                                     .arg(done).arg(total).arg(windows).arg(engine_->committed_rows()));
     });
@@ -197,6 +271,7 @@ void MainWindow::connect_engine() {
         if (st != "rejected") flush_engine_view();  // show every committed row before the final status
         const QString kind = engine_->model_status().artifact_kind == "fixture-untrained" ? " (fixture model)" : "";
         if (st == "completed") {
+            update_progress(scan_total_, scan_total_, true);
             status_bar_->set_status(QString("Analysis complete%1: %2 results in %3")
                                         .arg(kind).arg(engine_->committed_rows()).arg(csv));
         } else if (st == "canceled") {
@@ -335,6 +410,9 @@ void MainWindow::open_file(const QString& path) {
         undo_stack_.clear();
 
         state_.set_rows(std::move(res.rows), path);
+        set_unified_mode(!state_.rows().empty() && gui::display::is_unified_row(state_.rows().front()));
+        sidebar_->set_progress(0, 0, -1.0, false);
+        hide_inspector();
 
         // Compute unique sounds count
         std::set<std::string> sounds;
@@ -602,6 +680,10 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
+    if (event->key() == Qt::Key_Escape) {
+        hide_inspector();
+        return;
+    }
     if (event->key() == Qt::Key_Space) {
         if (detail_panel_) {
             detail_panel_->toggle_play();

@@ -108,6 +108,9 @@ ModelStatus EngineBridge::check_bundle(const QString& bundle_dir, bool allow_fix
         return st;
     }
     st.artifact_kind = m.value("artifact_kind").toString();
+    if (m.value("thresholds").toObject().value("blue_a").isDouble()) {
+        st.blue_a_threshold = m.value("thresholds").toObject().value("blue_a").toDouble();
+    }
     const QString file = m.value("model").toObject().value("file").toString();
     if (file.isEmpty() || file.contains('/') || file.contains('\\') ||
         !QFileInfo(QDir(bundle_dir).filePath(file)).isFile()) {
@@ -168,6 +171,11 @@ Row row_from_engine_json(const QJsonObject& row) {
     return r;
 }
 
+void EngineBridge::set_device(const QString& mode) {
+    const QString m = mode.toLower();
+    if (m == "auto" || m == "hybrid" || m == "gpu" || m == "cpu") options_.device = m;
+}
+
 QList<QJsonObject> EngineBridge::take_new_rows() {
     QList<QJsonObject> rows;
     rows.swap(new_rows_);
@@ -212,7 +220,8 @@ bool EngineBridge::analyze(const QStringList& audio_paths, const QStringList& pr
 
     QStringList args{"--inputs", inputs.fileName(), "--out", QDir(run_dir_).filePath("out"),
                      "--model-bundle", st.bundle_dir, "--threads", QString::number(options_.threads),
-                     "--batch", QString::number(options_.batch), "--run-id", run_id_};
+                     "--batch", QString::number(options_.batch), "--run-id", run_id_,
+                     "--device", options_.device.isEmpty() ? QString("auto") : options_.device};
     for (const QString& p : profiles) args << "--profile" << p;
     if (options_.allow_fixture_bundle) args << "--allow-fixture-bundle";
 
@@ -256,7 +265,13 @@ void EngineBridge::handle(const QJsonObject& ev) {
     last_seq_ = seq;
     emit event_received(ev);
     const QString type = ev.value("type").toString();
-    if (type == "progress") {
+    if (type == "started") {
+        const QString active = ev.value("device_active").toString();
+        if (!active.isEmpty()) {
+            emit backend_reported(ev.value("device_requested").toString(), active, ev.value("threads").toInt(),
+                                  ev.value("device_note").toString());
+        }
+    } else if (type == "progress") {
         emit progress(ev.value("files_done").toInt(), ev.value("files_total").toInt(),
                       static_cast<qint64>(ev.value("windows_done").toDouble()));
     } else if (type == "results_batch") {

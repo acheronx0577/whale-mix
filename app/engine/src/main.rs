@@ -1,5 +1,6 @@
 //! `whale-mix-engine --inputs <manifest.jsonl> --out <dir> --model-bundle <dir> [--profile <id>]...
-//!                   [--threads N] [--batch N] [--check-bundle] [--allow-fixture-bundle]`
+//!                   [--threads N] [--batch N] [--device auto|hybrid|gpu|cpu] [--check-bundle]
+//!                   [--allow-fixture-bundle]`
 //!
 //! Exit codes: 0 completed and validated, 1 run failed, 2 invalid arguments/configuration,
 //! 3 model bundle unavailable or invalid, 4 canceled with partial results.
@@ -28,6 +29,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         threads: 2,
         batch: 8,
         allow_fixture: false,
+        device: "auto".into(),
         run_id: format!("run-{}", std::process::id()),
     };
     let mut check_only = false;
@@ -54,6 +56,13 @@ fn parse(argv: &[String]) -> Result<Args, String> {
                     .map_err(|_| "--batch must be a number")?
             }
             "--run-id" => cfg.run_id = value("--run-id")?,
+            "--device" => {
+                let d = value("--device")?.to_ascii_lowercase();
+                if !engine::DEVICES.contains(&d.as_str()) {
+                    return Err("--device must be auto, hybrid, gpu or cpu".into());
+                }
+                cfg.device = d;
+            }
             "--allow-fixture-bundle" => cfg.allow_fixture = true,
             "--check-bundle" => check_only = true,
             other => return Err(format!("unknown argument {other}")),

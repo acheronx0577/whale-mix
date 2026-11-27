@@ -47,6 +47,7 @@ struct ModelStatus {
     QString bundle_dir;
     QString artifact_kind;
     QString reason;  // human-readable when unavailable
+    double blue_a_threshold = 0.897;  // bundle thresholds.blue_a (display only)
 };
 
 class EngineBridge : public QObject {
@@ -59,6 +60,7 @@ public:
         bool allow_fixture_bundle = false;  // tests only
         int threads = 2;
         int batch = 8;
+        QString device = "auto";  // compute mode passed as --device auto|hybrid|gpu|cpu
     };
 
     explicit EngineBridge(QObject* parent = nullptr);
@@ -76,6 +78,10 @@ public:
     QString run_dir() const { return run_dir_; }
     qint64 committed_rows() const { return committed_rows_; }
     QList<QJsonObject> take_new_rows();
+    // Compute mode for the next run: "auto", "hybrid", "gpu" or "cpu" (anything else is ignored).
+    void set_device(const QString& mode);
+    QString device() const { return options_.device; }
+    int threads() const { return options_.threads; }
 
     // Queue audio for analysis. Returns false (with reason via failed/model_unavailable) when the
     // model or worker is unavailable or a run is already active.
@@ -92,6 +98,8 @@ signals:
     void file_failed(const QString& path, const QString& kind, const QString& message);
     void run_finished(const QString& status, int exit_code, const QString& results_csv);
     void event_received(const QJsonObject& event);
+    // From the worker's "started" event: the backend that actually runs the model.
+    void backend_reported(const QString& requested, const QString& active, int threads, const QString& note);
 
 private:
     void on_ready_read();

@@ -2,6 +2,7 @@
 #include "Theme.h"
 #include "Fonts.h"
 #include "Eyebrow.h"
+#include "DisplayText.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
@@ -44,6 +45,82 @@ void Sidebar::set_has_manual(bool has_manual) {
     }
 }
 
+void Sidebar::set_unified_model(bool unified, double threshold) {
+    unified_ = unified;
+    threshold_ = threshold;
+    update();
+}
+
+void Sidebar::set_progress(int files_done, int files_total, double eta_s, bool finished) {
+    files_done_ = qMax(0, files_done);
+    files_total_ = qMax(0, files_total);
+    eta_s_ = eta_s;
+    finished_ = finished;
+    update();
+}
+
+QString Sidebar::progress_text() const {
+    if (files_total_ <= 0) return QString();
+    if (finished_) {
+        return QString("%1 / %2 files \u00b7 Done").arg(display::thousands(files_done_), display::thousands(files_total_));
+    }
+    const double pct = 100.0 * files_done_ / files_total_;
+    return QString("%1 / %2 files \u00b7 %3%").arg(display::thousands(files_done_), display::thousands(files_total_),
+                                                  QString::number(pct, 'f', 1));
+}
+
+QString Sidebar::eta_display() const {
+    if (files_total_ <= 0) return QString();
+    if (finished_) return "Scan complete";
+    return display::eta_text(eta_s_);
+}
+
+void Sidebar::set_compute_mode(const QString& mode) {
+    const QString m = mode.toLower();
+    if (m != "auto" && m != "hybrid" && m != "gpu" && m != "cpu") return;
+    if (compute_mode_ == m) return;
+    compute_mode_ = m;
+    update();
+}
+
+void Sidebar::set_compute_backend(const QString& active, int threads, const QString& note) {
+    active_backend_ = active;
+    backend_threads_ = threads;
+    backend_note_ = note;
+    update();
+}
+
+QString Sidebar::compute_subtitle() const {
+    if (!active_backend_.isEmpty()) {
+        QString s = QString("Active: %1").arg(active_backend_.toUpper());
+        if (active_backend_.compare("cpu", Qt::CaseInsensitive) == 0 && backend_threads_ > 0) {
+            s += QString(" \u00b7 %1 threads").arg(backend_threads_);
+        }
+        if (compute_mode_ != "cpu" && active_backend_.compare("cpu", Qt::CaseInsensitive) == 0) {
+            s += "\nGPU not in this build yet \u00b7 CPU fallback";
+        }
+        return s;
+    }
+    if (compute_mode_ == "hybrid") return "CPU + GPU hybrid (falls back to CPU)";
+    if (compute_mode_ == "gpu") return "GPU only (falls back to CPU)";
+    if (compute_mode_ == "cpu") return "CPU only \u00b7 no GPU needed";
+    return "Uses a GPU when found, else CPU";
+}
+
+int Sidebar::progress_top() const { return pile_row_rect(3).bottom() + 16; }
+
+int Sidebar::compute_top() const {
+    return progress_visible() ? progress_top() + 100 : progress_top();
+}
+
+int Sidebar::source_top() const { return compute_top() + 116; }
+
+QRect Sidebar::compute_segment_rect(int index) const {
+    if (index < 0 || index > 3) return QRect();
+    const int y = compute_top() + 14 + 10;
+    return QRect(24 + 2 + index * 47, y + 2, 47, 26);
+}
+
 QSize Sidebar::sizeHint() const {
     return QSize(240, 800);
 }
@@ -68,17 +145,24 @@ void Sidebar::mouseMoveEvent(QMouseEvent* event) {
         }
     }
 
-    if (hovered != hovered_row_) {
+    int seg = -1;
+    for (int i = 0; i < 4; ++i) {
+        if (compute_segment_rect(i).contains(event->pos())) seg = i;
+    }
+    if (hovered != hovered_row_ || seg != hovered_segment_) {
         hovered_row_ = hovered;
-        setCursor((hovered_row_ >= 0) ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        hovered_segment_ = seg;
+        setCursor((hovered_row_ >= 0 || seg >= 0) ? Qt::PointingHandCursor : Qt::ArrowCursor);
         update();
     }
 }
 
 void Sidebar::leaveEvent(QEvent* /*event*/) {
-    if (hovered_row_ >= 0 || pressed_row_ >= 0) {
+    if (hovered_row_ >= 0 || pressed_row_ >= 0 || hovered_segment_ >= 0 || pressed_segment_ >= 0) {
         hovered_row_ = -1;
         pressed_row_ = -1;
+        hovered_segment_ = -1;
+        pressed_segment_ = -1;
         setCursor(Qt::ArrowCursor);
         update();
     }
@@ -93,10 +177,32 @@ void Sidebar::mousePressEvent(QMouseEvent* event) {
                 return;
             }
         }
+        for (int i = 0; i < 4; ++i) {
+            if (compute_segment_rect(i).contains(event->pos())) {
+                pressed_segment_ = i;
+                update();
+                return;
+            }
+        }
     }
 }
 
 void Sidebar::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && pressed_segment_ >= 0) {
+        const int seg = pressed_segment_;
+        pressed_segment_ = -1;
+        if (compute_segment_rect(seg).contains(event->pos())) {
+            static const char* modes[4] = {"auto", "hybrid", "gpu", "cpu"};
+            const QString m = modes[seg];
+            if (m != compute_mode_) {
+                compute_mode_ = m;
+                active_backend_.clear();  // re-reported by the engine on the next scan
+                emit compute_mode_changed(m);
+            }
+        }
+        update();
+        return;
+    }
     if (event->button() == Qt::LeftButton && pressed_row_ >= 0) {
         int pressed = pressed_row_;
         pressed_row_ = -1;
@@ -268,11 +374,80 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     int tot_cw = fm_tot_cnt.horizontalAdvance(tot_str);
     p.drawText(r_tot.right() - tot_cw, tot_text_y, tot_str);
 
-    // 4. SOURCE section
-    int src_eyebrow_y = r_tot.bottom() + 14;
+    // 4. PROGRESS section (while / after a scan)
+    if (progress_visible()) {
+        const int py = progress_top();
+        Eyebrow::paint(&p, QRect(24, py, 192, 14), finished_ ? "SCAN COMPLETE" : "SCAN PROGRESS");
+        // Files on the left (proportional, never elided at 10,000 / 10,000), percent / Done on the right
+        QFont files_font = fonts::body(13);
+        QFont pct_font = fonts::mono(12, 450);
+        QFontMetrics fm_pct(pct_font);
+        const QString pct = finished_ ? QString("Done")
+                                      : QString::number(100.0 * files_done_ / files_total_, 'f', 1) + "%";
+        const int pct_w = fm_pct.horizontalAdvance(pct);
+        p.setFont(pct_font);
+        p.setPen(theme::kDeep);
+        p.drawText(QRect(216 - pct_w, py + 22, pct_w, 18), Qt::AlignRight | Qt::AlignVCenter, pct);
+        p.setFont(files_font);
+        p.setPen(theme::kInk);
+        const QString files = QString("%1 / %2 files").arg(display::thousands(files_done_), display::thousands(files_total_));
+        p.drawText(QRect(24, py + 22, 192 - pct_w - 8, 18), Qt::AlignLeft | Qt::AlignVCenter,
+                   QFontMetrics(files_font).elidedText(files, Qt::ElideRight, 192 - pct_w - 8));
+
+        const QRectF track(24.0, py + 48, 192.0, 8.0);
+        p.setPen(Qt::NoPen);
+        p.setBrush(theme::kMist);
+        p.drawRoundedRect(track, 4.0, 4.0);
+        const double frac = finished_ ? 1.0 : qBound(0.0, static_cast<double>(files_done_) / files_total_, 1.0);
+        if (frac > 0.0) {
+            p.setBrush(theme::kDeep);
+            p.drawRoundedRect(QRectF(track.x(), track.y(), qMax(8.0, track.width() * frac), track.height()), 4.0, 4.0);
+        }
+
+        QFont eta_font = fonts::body(13);
+        p.setFont(eta_font);
+        p.setPen(finished_ ? theme::kDeep : theme::kSlate);
+        p.drawText(QRect(24, py + 62, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, eta_display());
+    }
+
+    // 5. COMPUTE MODE: Auto / Hybrid / GPU / CPU segmented pill + active backend subtitle
+    {
+        const int cy = compute_top();
+        Eyebrow::paint(&p, QRect(24, cy, 192, 14), "COMPUTE MODE");
+        const QRectF outer(24.5, cy + 24.5, 191.0, 29.0);
+        p.setPen(QPen(theme::kLine, 1.0));
+        p.setBrush(theme::kPaper);
+        p.drawRoundedRect(outer, 8.0, 8.0);
+        static const char* names[4] = {"Auto", "Hybrid", "GPU", "CPU"};
+        static const char* modes[4] = {"auto", "hybrid", "gpu", "cpu"};
+        QFont seg_font = fonts::body(12, 500);
+        QFontMetrics fm_seg(seg_font);
+        p.setFont(seg_font);
+        for (int i = 0; i < 4; ++i) {
+            const QRect r = compute_segment_rect(i);
+            const bool active = compute_mode_ == modes[i];
+            if (active) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(theme::kDeep);
+                p.drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 6.0, 6.0);
+            } else if (pressed_segment_ == i || hovered_segment_ == i) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(pressed_segment_ == i ? theme::kMist : QColor(Qt::white));
+                p.drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 6.0, 6.0);
+            }
+            p.setPen(active ? QColor(Qt::white) : (hovered_segment_ == i ? theme::kDeep : theme::kInk));
+            p.drawText(r, Qt::AlignCenter, names[i]);
+        }
+        QFont sub_font = fonts::body(12);
+        p.setFont(sub_font);
+        p.setPen(theme::kSlate);
+        p.drawText(QRect(24, cy + 60, 192, 36), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, compute_subtitle());
+    }
+
+    // 6. SOURCE section
+    int src_eyebrow_y = source_top();
     Eyebrow::paint(&p, QRect(24, src_eyebrow_y, 192, 14), "SOURCE");
 
-    // Source name
     QFont src_name_font = fonts::mono(13, 450);
     p.setFont(src_name_font);
     p.setPen(theme::kInk);
@@ -281,16 +456,44 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     QString disp_file = file_name_.isEmpty() ? "No source yet" : file_name_;
     p.drawText(QRect(24, src_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, fm_src.elidedText(disp_file, Qt::ElideRight, 192));
 
-    // Hint: "<n> sounds · <rows> pictures"
+    // Hint: "<n> sounds · <rows> windows"
     int hint_y = src_y + 18 + 6;
     QFont hint_font = fonts::body(14);
     p.setFont(hint_font);
     p.setPen(theme::kSlate);
-    QString hint_text = QString("%1 sounds · %2 pictures").arg(num_sounds_).arg(num_pictures_);
-    p.drawText(QRect(24, hint_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, hint_text);
+    QString hint_text = unified_
+        ? QString("%1 sounds \u00b7 %2 windows").arg(display::thousands(num_sounds_), display::thousands(num_pictures_))
+        : QString("%1 sounds \u00b7 %2 pictures").arg(num_sounds_).arg(num_pictures_);
+    p.drawText(QRect(24, hint_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter,
+               QFontMetrics(hint_font).elidedText(hint_text, Qt::ElideRight, 192));
 
-    // 5. REASON section
-    int reason_eyebrow_y = hint_y + 18 + 22;
+    // 7. What the labels mean
+    int reason_eyebrow_y = hint_y + 18 + 20;
+    if (unified_) {
+        Eyebrow::paint(&p, QRect(24, reason_eyebrow_y, 192, 14), "WHAT IT DETECTS");
+        int y = reason_eyebrow_y + 14 + 10;
+        QFont term_font = fonts::body(13, 600);
+        QFont desc_font = fonts::body(13);
+        p.setFont(term_font);
+        p.setPen(theme::kDeep);
+        p.drawText(QRect(24, y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, "Blue whale A-calls");
+        y += 20;
+        p.setFont(desc_font);
+        p.setPen(theme::kSlate);
+        const QString desc = QString("Northeast Pacific population. A window is a Call when "
+                                     "WhaleMix Light is at least %1 confident; otherwise it is "
+                                     "Below threshold.").arg(display::percent(threshold_));
+        QRect bound = p.boundingRect(QRect(24, y, 192, 200), Qt::TextWordWrap | Qt::AlignLeft, desc);
+        p.drawText(bound, Qt::TextWordWrap | Qt::AlignLeft, desc);
+        y += bound.height() + 6;
+        if (has_manual_) {
+            const QString man = "Set by hand: you changed it with C, N or R.";
+            QRect mb = p.boundingRect(QRect(24, y, 192, 100), Qt::TextWordWrap | Qt::AlignLeft, man);
+            p.drawText(mb, Qt::TextWordWrap | Qt::AlignLeft, man);
+        }
+        return;
+    }
+
     Eyebrow::paint(&p, QRect(24, reason_eyebrow_y, 192, 14), "REASON");
 
     struct ReasonDef {
