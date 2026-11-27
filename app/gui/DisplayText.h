@@ -83,6 +83,27 @@ inline QString decided_by(const Row& r) {
 
 inline QString thousands(qint64 n) { return QLocale(QLocale::English).toString(n); }
 
+inline QString wav_file_unit(qint64 n) { return n == 1 ? QString("WAV file") : QString("WAV files"); }
+
+inline QString wav_files(qint64 n) { return thousands(n) + " " + wav_file_unit(n); }
+
+inline QString window_10s_unit(qint64 n) { return n == 1 ? QString("10s window") : QString("10s windows"); }
+
+inline QString windows_10s(qint64 n) { return thousands(n) + " " + window_10s_unit(n); }
+
+// Scan progress count, e.g. "1,250 / 10,000 WAV files" or "1 / 1 WAV file".
+inline QString wav_progress(qint64 done, qint64 total) {
+    return QString("%1 / %2 %3").arg(thousands(done), thousands(total), wav_file_unit(total));
+}
+
+// SOURCE / header counts. Unified scans: "2,135 WAV files · 65,000 10s windows".
+inline QString source_counts(qint64 wavs, qint64 rows, bool unified) {
+    const QString left = wav_files(wavs);
+    const QString right = unified ? windows_10s(rows)
+                                  : (thousands(rows) + (rows == 1 ? " picture" : " pictures"));
+    return left + QString(" \u00b7 ") + right;
+}
+
 inline QString eta_text(double seconds) {
     if (!(seconds >= 0.0) || !std::isfinite(seconds)) return "Est. time left: estimating\xe2\x80\xa6";
     const qint64 s = static_cast<qint64>(std::llround(seconds));

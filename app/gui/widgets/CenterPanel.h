@@ -32,6 +32,7 @@ public:
     // Show or hide the Review pill to match the table mode (unified model has no Review pile).
     void sync_mode();
     PillButton* review_pill() { return pill_review_; }
+    QString meta_text() const { return meta_label_ ? meta_label_->text() : QString(); }
 
 signals:
     void pile_filter_changed(const QString& pile);

@@ -261,13 +261,20 @@ void MainWindow::connect_engine() {
         top_bar_->set_file_name(QFileInfo(run_dir).fileName());
         sidebar_->set_source_info(QFileInfo(run_dir).fileName(), 0, 0);
         update_all_views();
-        status_bar_->set_status(QString("Analyzing audio: 0 of %1 files").arg(total));
+        status_bar_->set_status(QString("Analyzing audio: 0 of %1 %2")
+                                    .arg(total)
+                                    .arg(gui::display::wav_file_unit(total)));
     });
     connect(engine_, &EngineBridge::rows_committed, this, [this](qint64) { append_engine_rows(); });
     connect(engine_, &EngineBridge::progress, this, [this](int done, int total, qint64 windows) {
         update_progress(done, total, false);
-        status_bar_->set_status(QString("Analyzing audio: %1 of %2 files, %3 windows, %4 results committed")
-                                    .arg(done).arg(total).arg(windows).arg(engine_->committed_rows()));
+        status_bar_->set_status(QString("Analyzing audio: %1 of %2 %3, %4 %5, %6 results committed")
+                                    .arg(done)
+                                    .arg(total)
+                                    .arg(gui::display::wav_file_unit(total))
+                                    .arg(windows)
+                                    .arg(gui::display::window_10s_unit(windows))
+                                    .arg(engine_->committed_rows()));
     });
     connect(engine_, &EngineBridge::run_finished, this, [this](const QString& st, int, const QString& csv) {
         if (st != "rejected") flush_engine_view();  // show every committed row before the final status

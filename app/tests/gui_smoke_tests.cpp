@@ -424,10 +424,10 @@ TEST(GuiRedesignTest, SidebarProgressEtaAndComputeMode) {
     EXPECT_FALSE(sb->progress_visible());
     sb->set_progress(1250, 10000, 700.0, false);
     EXPECT_TRUE(sb->progress_visible());
-    EXPECT_EQ(sb->progress_text().toStdString(), "1,250 / 10,000 files \xc2\xb7 12.5%");
+    EXPECT_EQ(sb->progress_text().toStdString(), "1,250 / 10,000 WAV files \xc2\xb7 12.5%");
     EXPECT_EQ(sb->eta_display().toStdString(), "Est. ~11m 40s left");
     sb->set_progress(10000, 10000, -1.0, true);
-    EXPECT_EQ(sb->progress_text().toStdString(), "10,000 / 10,000 files \xc2\xb7 Done");
+    EXPECT_EQ(sb->progress_text().toStdString(), "10,000 / 10,000 WAV files \xc2\xb7 Done");
 
     sb->resize(240, 792);
     QSignalSpy spy(sb, &whalemix::gui::Sidebar::compute_mode_changed);
@@ -445,6 +445,60 @@ TEST(GuiRedesignTest, SidebarProgressEtaAndComputeMode) {
         if (i > 0) EXPECT_GT(sb->compute_segment_rect(i).left(), sb->compute_segment_rect(i - 1).right());
     }
     QTest::mouseClick(sb, Qt::LeftButton, Qt::NoModifier, sb->compute_segment_rect(before == "auto" ? 0 : (before == "gpu" ? 2 : (before == "cpu" ? 3 : 1))).center());
+}
+
+TEST(GuiRedesignTest, WavFilesAndTenSecondWindowsLabels) {
+    whalemix::fonts::init();
+    using whalemix::gui::display::source_counts;
+    using whalemix::gui::display::wav_files;
+    using whalemix::gui::display::wav_progress;
+    using whalemix::gui::display::windows_10s;
+
+    EXPECT_EQ(wav_files(1).toStdString(), "1 WAV file");
+    EXPECT_EQ(wav_files(10000).toStdString(), "10,000 WAV files");
+    EXPECT_EQ(windows_10s(1).toStdString(), "1 10s window");
+    EXPECT_EQ(windows_10s(335450).toStdString(), "335,450 10s windows");
+    EXPECT_EQ(wav_progress(1, 1).toStdString(), "1 / 1 WAV file");
+    EXPECT_EQ(wav_progress(1920, 10000).toStdString(), "1,920 / 10,000 WAV files");
+    EXPECT_EQ(source_counts(2135, 65000, true).toStdString(),
+              "2,135 WAV files \xc2\xb7 65,000 10s windows");
+    EXPECT_EQ(source_counts(10000, 335450, true).toStdString(),
+              "10,000 WAV files \xc2\xb7 335,450 10s windows");
+    EXPECT_EQ(source_counts(1, 1, false).toStdString(), "1 WAV file \xc2\xb7 1 picture");
+
+    // "10,000 / 10,000 WAV files" must fit the 192px column now that percent lives on the eyebrow row.
+    EXPECT_LE(QFontMetrics(whalemix::fonts::body(13)).horizontalAdvance("10,000 / 10,000 WAV files"), 192);
+    EXPECT_LE(QFontMetrics(whalemix::fonts::heading(14, 450)).horizontalAdvance("Total windows")
+                  + 8
+                  + QFontMetrics(whalemix::fonts::mono(14, 450)).horizontalAdvance("335,450"),
+              192);
+    EXPECT_LE(QFontMetrics(whalemix::fonts::mono(11, 450, 0.1)).horizontalAdvance("PILES (10S WINDOWS)"), 192);
+
+    // The finished 10k SOURCE hint wraps to two lines in 192px and does not elide any characters.
+    {
+        QFontMetrics fm(whalemix::fonts::body(14));
+        const QString hint = source_counts(10000, 335450, true);
+        const QRect bound = fm.boundingRect(QRect(0, 0, 192, 80), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, hint);
+        EXPECT_LE(bound.width(), 192);
+        EXPECT_GE(bound.height(), fm.lineSpacing());
+        EXPECT_LE(bound.height(), fm.lineSpacing() * 2 + 8);
+        EXPECT_FALSE(fm.elidedText(hint, Qt::ElideRight, 192 * 2).endsWith(QChar(0x2026)));
+    }
+
+    whalemix::MainWindow window;
+    auto* sb = window.sidebar();
+    sb->set_unified_model(true, 0.897);
+    sb->set_source_info("wav10k", 2135, 65000);
+    EXPECT_EQ(sb->source_hint_text().toStdString(), "2,135 WAV files \xc2\xb7 65,000 10s windows");
+    sb->set_progress(1, 1, 5.0, false);
+    EXPECT_EQ(sb->progress_text().toStdString(), "1 / 1 WAV file \xc2\xb7 100.0%");
+
+    // Center-panel meta uses the same units, including singular forms.
+    auto rows = unified_rows();
+    window.center_panel()->set_rows({rows[0]}, true, 1);
+    EXPECT_EQ(window.center_panel()->meta_text().toStdString(), "1 10S WINDOW FROM 1 WAV FILE");
+    window.center_panel()->set_rows(rows, true, 2);
+    EXPECT_EQ(window.center_panel()->meta_text().toStdString(), "40 10S WINDOWS FROM 2 WAV FILES");
 }
 
 int main(int argc, char* argv[]) {

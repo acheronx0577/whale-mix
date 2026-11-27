@@ -487,7 +487,7 @@ void ScoreTable::paintEvent(QPaintEvent* /*event*/) {
         // Empty message
         QString empty_msg;
         if (!has_file_) {
-            empty_msg = unified_ ? "Scanning\u2026 detections appear here as files finish." : "Open a Blue A score CSV.";
+            empty_msg = unified_ ? "Scanning\u2026 detections appear here as WAV files finish." : "Open a Blue A score CSV.";
         } else if (all_rows_.empty()) {
             empty_msg = "No scored windows in this file.";
         } else {

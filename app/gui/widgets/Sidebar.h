@@ -26,6 +26,7 @@ public:
     void set_progress(int files_done, int files_total, double eta_s, bool finished);
     QString progress_text() const;
     QString eta_display() const;
+    QString source_hint_text() const;
     bool progress_visible() const { return files_total_ > 0; }
 
     // Compute mode: "auto", "hybrid", "gpu" or "cpu". The subtitle reports the active backend.

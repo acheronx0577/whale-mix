@@ -62,11 +62,15 @@ void Sidebar::set_progress(int files_done, int files_total, double eta_s, bool f
 QString Sidebar::progress_text() const {
     if (files_total_ <= 0) return QString();
     if (finished_) {
-        return QString("%1 / %2 files \u00b7 Done").arg(display::thousands(files_done_), display::thousands(files_total_));
+        return display::wav_progress(files_done_, files_total_) + QString(" \u00b7 Done");
     }
     const double pct = 100.0 * files_done_ / files_total_;
-    return QString("%1 / %2 files \u00b7 %3%").arg(display::thousands(files_done_), display::thousands(files_total_),
-                                                  QString::number(pct, 'f', 1));
+    return display::wav_progress(files_done_, files_total_)
+        + QString(" \u00b7 %1%").arg(QString::number(pct, 'f', 1));
+}
+
+QString Sidebar::source_hint_text() const {
+    return display::source_counts(num_sounds_, num_pictures_, unified_);
 }
 
 QString Sidebar::eta_display() const {
@@ -244,7 +248,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     p.drawLine(width() - 1, 0, width() - 1, height());
 
     // 1. PILES eyebrow at y = 24
-    Eyebrow::paint(&p, QRect(24, 24, 192, 14), "PILES");
+    Eyebrow::paint(&p, QRect(24, 24, 192, 14), "PILES (10S WINDOWS)");
 
     // 2. Pile bar: y = 46, height = 8, radius = 4, gap = 2
     int bar_y = 46;
@@ -369,7 +373,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     p.setFont(tot_font);
     p.setPen(theme::kInk);
     int tot_text_y = r_tot.top() + 4 + fm_tot.ascent();
-    p.drawText(r_tot.left(), tot_text_y, "Total");
+    p.drawText(r_tot.left(), tot_text_y, "Total windows");
 
     p.setFont(tot_cnt_font);
     p.setPen(theme::kInk);
@@ -381,7 +385,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     if (progress_visible()) {
         const int py = progress_top();
         Eyebrow::paint(&p, QRect(24, py, 192, 14), finished_ ? "SCAN COMPLETE" : "SCAN PROGRESS");
-        // Files on the left (proportional, never elided at 10,000 / 10,000), percent / Done on the right
+        // Percent / Done sits on the eyebrow row so "10,000 / 10,000 WAV files" keeps the full 192px column.
         QFont files_font = fonts::body(13);
         QFont pct_font = fonts::mono(12, 450);
         QFontMetrics fm_pct(pct_font);
@@ -390,12 +394,12 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
         const int pct_w = fm_pct.horizontalAdvance(pct);
         p.setFont(pct_font);
         p.setPen(theme::kDeep);
-        p.drawText(QRect(216 - pct_w, py + 22, pct_w, 18), Qt::AlignRight | Qt::AlignVCenter, pct);
+        p.drawText(QRect(216 - pct_w, py, pct_w, 14), Qt::AlignRight | Qt::AlignVCenter, pct);
         p.setFont(files_font);
         p.setPen(theme::kInk);
-        const QString files = QString("%1 / %2 files").arg(display::thousands(files_done_), display::thousands(files_total_));
-        p.drawText(QRect(24, py + 22, 192 - pct_w - 8, 18), Qt::AlignLeft | Qt::AlignVCenter,
-                   QFontMetrics(files_font).elidedText(files, Qt::ElideRight, 192 - pct_w - 8));
+        const QString files = display::wav_progress(files_done_, files_total_);
+        p.drawText(QRect(24, py + 22, 192, 18), Qt::AlignLeft | Qt::AlignVCenter,
+                   QFontMetrics(files_font).elidedText(files, Qt::ElideRight, 192));
 
         const QRectF track(24.0, py + 48, 192.0, 8.0);
         p.setPen(Qt::NoPen);
@@ -459,19 +463,17 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     QString disp_file = file_name_.isEmpty() ? "No source yet" : file_name_;
     p.drawText(QRect(24, src_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, fm_src.elidedText(disp_file, Qt::ElideRight, 192));
 
-    // Hint: "<n> sounds · <rows> windows"
+    // Hint: "2,135 WAV files · 65,000 10s windows" — wraps to two lines in the 192px column.
     int hint_y = src_y + 18 + 6;
     QFont hint_font = fonts::body(14);
     p.setFont(hint_font);
     p.setPen(theme::kSlate);
-    QString hint_text = unified_
-        ? QString("%1 sounds \u00b7 %2 windows").arg(display::thousands(num_sounds_), display::thousands(num_pictures_))
-        : QString("%1 sounds \u00b7 %2 pictures").arg(num_sounds_).arg(num_pictures_);
-    p.drawText(QRect(24, hint_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter,
-               QFontMetrics(hint_font).elidedText(hint_text, Qt::ElideRight, 192));
+    const QString hint_text = source_hint_text();
+    const QRect hint_bound = p.boundingRect(QRect(24, hint_y, 192, 80), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, hint_text);
+    p.drawText(hint_bound, Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, hint_text);
 
     // 7. What the labels mean
-    int reason_eyebrow_y = hint_y + 18 + 20;
+    int reason_eyebrow_y = hint_bound.bottom() + 20;
     if (unified_) {
         Eyebrow::paint(&p, QRect(24, reason_eyebrow_y, 192, 14), "WHAT IT DETECTS");
         int y = reason_eyebrow_y + 14 + 10;
@@ -483,7 +485,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
         y += 20;
         p.setFont(desc_font);
         p.setPen(theme::kSlate);
-        const QString desc = QString("Northeast Pacific population. A window is a Call when "
+        const QString desc = QString("Northeast Pacific population. A 10s window is a Call when "
                                      "WhaleMix Light is at least %1 confident; otherwise it is "
                                      "Below threshold.").arg(display::percent(threshold_));
         QRect bound = p.boundingRect(QRect(24, y, 192, 200), Qt::TextWordWrap | Qt::AlignLeft, desc);

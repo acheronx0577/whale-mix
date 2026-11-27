@@ -2,6 +2,7 @@
 #include "Theme.h"
 #include "Fonts.h"
 #include "Eyebrow.h"
+#include "DisplayText.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -32,6 +33,9 @@ CenterPanel::CenterPanel(QWidget* parent) : QWidget(parent) {
     auto* meta_label = meta_label_;
     meta_label->setFont(fonts::mono(11, 450, 0.1));
     meta_label->setStyleSheet("color: #56658f; padding-bottom: 8px; text-transform: uppercase;");
+    meta_label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    meta_label->setMinimumWidth(0);
+    meta_label->setAlignment(Qt::AlignRight | Qt::AlignBottom);
     head_layout->addWidget(meta_label, 0, Qt::AlignBottom | Qt::AlignRight);
 
     main_layout->addWidget(head_widget);
@@ -137,9 +141,17 @@ void CenterPanel::sync_mode() {
 void CenterPanel::update_meta_label() {
     sync_mode();
     if (!meta_label_) return;
-    meta_label_->setText(num_rows_ == 0 ? QString("NO SOURCE")
-                                        : QString(table_->unified_mode() ? "%L1 WINDOWS FROM %L2 SOUNDS" : "%L1 PICTURES FROM %L2 SOUNDS")
-                                              .arg(num_rows_).arg(num_sounds_));
+    if (num_rows_ == 0) {
+        meta_label_->setText("NO SOURCE");
+    } else if (table_->unified_mode()) {
+        const QString wins = num_rows_ == 1 ? "10S WINDOW" : "10S WINDOWS";
+        const QString wavs = num_sounds_ == 1 ? "WAV FILE" : "WAV FILES";
+        meta_label_->setText(QString("%L1 %2 FROM %L3 %4").arg(num_rows_).arg(wins).arg(num_sounds_).arg(wavs));
+    } else {
+        const QString pics = num_rows_ == 1 ? "PICTURE" : "PICTURES";
+        const QString wavs = num_sounds_ == 1 ? "WAV FILE" : "WAV FILES";
+        meta_label_->setText(QString("%L1 %2 FROM %L3 %4").arg(num_rows_).arg(pics).arg(num_sounds_).arg(wavs));
+    }
 }
 
 void CenterPanel::append_rows(const std::vector<Row>& rows, size_t from, bool has_file, int num_sounds) {
