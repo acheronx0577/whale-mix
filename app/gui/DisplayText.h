@@ -37,18 +37,84 @@ inline QString confidence_text(const Row& r) {
 
 inline bool is_fixture(const Row& r) { return r.mix_reason.rfind("fixture model", 0) == 0; }
 
-// REASON cell variants from longest to shortest; the table shows the longest that fits its column.
-inline QStringList reason_variants(const Row& r, double threshold) {
+// Honest, score- and audio-based reason for a 10s window. Engine codes stay on the row.
+inline constexpr double kSilentRms = 1.0e-4;
+inline constexpr double kLowBandRatio = 0.05;
+inline constexpr double kBorderlineMin = 0.50;
+
+enum class TickKind { NotCall, Silent, Borderline, Call };
+
+inline TickKind tick_kind(const Row& r, double threshold) {
+    double v = 0.0;
+    const bool has = parse_score(r.bat, &v);
+    if (r.mix_label == "call" || (has && v >= threshold)) return TickKind::Call;
+    if (has && v >= kBorderlineMin) return TickKind::Borderline;
+    if (r.has_audio_stats && r.audio_rms < kSilentRms) return TickKind::Silent;
+    return TickKind::NotCall;
+}
+
+inline QString signal_reason(const Row& r, double threshold) {
     const QString thr = percent(threshold);
-    if (r.mix_reason == "manual") return {"Set by hand (you changed the label)", "Set by hand"};
-    if (is_fixture(r)) return {"Fixture model (untrained)", "Fixture model"};
-    if (r.bat.empty()) return {"Not assessable for A-calls", "Not assessable"};
-    if (r.mix_label == "call")
-        return {QString("Blue whale A-call (\u2265 %1 threshold)").arg(thr),
-                QString("Blue whale A-call (\u2265 %1)").arg(thr), QString("A-call \u2265 %1").arg(thr)};
-    if (r.mix_label == "review") return {"Needs review (uncertain)", "Needs review"};
-    return {QString("No call (< %1 threshold)").arg(thr), QString("No call (< %1)").arg(thr),
-            QString("< %1").arg(thr)};
+    if (r.mix_reason == "manual") return "Set by hand (you changed the label)";
+    if (is_fixture(r)) return "Fixture model (untrained)";
+    if (r.bat.empty()) return "Not assessable for A-calls";
+    if (r.mix_label == "call") return QString("Blue whale A-call (\u2265 %1)").arg(thr);
+    if (r.mix_label == "review") return "Needs review (uncertain)";
+    double v = 0.0;
+    const bool has = parse_score(r.bat, &v);
+    if (has && v >= kBorderlineMin && v < threshold) {
+        return QString("Borderline signal (%1)").arg(percent(v));
+    }
+    if (!r.has_audio_stats) return QString("Below threshold (< %1)").arg(thr);
+    if (r.audio_rms < kSilentRms) return "Silent / near-zero audio";
+    if (r.band_all > 0.0 && (r.band_10_110 / r.band_all) < kLowBandRatio) {
+        return QString::fromUtf8("No low-freq signal (10\xe2\x80\x93" "110 Hz)");
+    }
+    return QString("Other low-freq sound (< %1)").arg(thr);
+}
+
+// Longest-to-shortest variants; the table wraps the full string and only falls back if needed.
+inline QStringList reason_variants(const Row& r, double threshold) {
+    const QString full = signal_reason(r, threshold);
+    if (r.mix_reason == "manual") return {full, "Set by hand"};
+    if (is_fixture(r)) return {full, "Fixture model"};
+    if (r.bat.empty()) return {full, "Not assessable"};
+    if (r.mix_label == "call") {
+        const QString thr = percent(threshold);
+        return {full, QString("A-call \u2265 %1").arg(thr)};
+    }
+    if (r.mix_label == "review") return {full, "Needs review"};
+    return {full};
+}
+
+inline QString summary_reason(int calls, int non_calls) {
+    const QString left = calls == 1 ? QString("1 Blue A call") : QString("%1 Blue A calls").arg(calls);
+    const QString right = non_calls == 1 ? QString("1 non-call") : QString("%1 non-call").arg(non_calls);
+    return left + QString(" \u00b7 ") + right;
+}
+
+inline QString clock_text(double seconds) {
+    const qint64 s = qMax<qint64>(0, static_cast<qint64>(std::llround(std::isfinite(seconds) ? seconds : 0.0)));
+    return QString("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QChar('0'));
+}
+
+inline QString duration_text(double seconds) {
+    const qint64 s = qMax<qint64>(0, static_cast<qint64>(std::llround(std::isfinite(seconds) ? seconds : 0.0)));
+    if (s < 60) return QString("%1s").arg(s);
+    return QString("%1m %2s").arg(s / 60).arg(s % 60, 2, 10, QChar('0'));
+}
+
+inline double parse_seconds(const std::string& s) {
+    if (s.empty()) return 0.0;
+    char* end = nullptr;
+    const double v = std::strtod(s.c_str(), &end);
+    return (end != s.c_str() && std::isfinite(v)) ? v : 0.0;
+}
+
+inline QString window_time_range(const Row& r) {
+    const QString a = clock_text(parse_seconds(r.picture_start_s));
+    const QString b = clock_text(parse_seconds(r.picture_end_s));
+    return a + QString::fromUtf8("\xe2\x80\x93") + b;
 }
 
 // One or two plain sentences for the inspector's WHY THIS LABEL block.
@@ -66,8 +132,12 @@ inline QString why_long(const Row& r, double threshold) {
         base = QString("Blue whale A-call detected \xe2\x80\x94 %1 confidence (above the %2 threshold).").arg(conf, thr);
     } else if (r.auto_label == "review") {
         base = QString("Uncertain \xe2\x80\x94 %1 confidence, so this window was sent to review.").arg(conf);
+    } else if (has && v >= kBorderlineMin && v < threshold) {
+        base = QString("Borderline signal \xe2\x80\x94 %1 confidence, below the %2 call threshold.").arg(conf, thr);
     } else {
-        base = QString("No whale call detected \xe2\x80\x94 %1 confidence (below the %2 threshold).").arg(conf, thr);
+        const QString why = signal_reason(r, threshold);
+        base = QString("No whale call detected \xe2\x80\x94 %1. Confidence is %2, below the %3 threshold.")
+                   .arg(why, conf, thr);
     }
     if (r.mix_reason == "manual") {
         const QString label = r.mix_label == "call" ? "Call" : (r.mix_label == "review" ? "Review" : "Not-call");

@@ -168,6 +168,12 @@ Row row_from_engine_json(const QJsonObject& row) {
     if (row.value("fixture").toBool()) reason = "fixture model (untrained): " + reason;
     r.auto_label = r.mix_label = row.value("automatic_label").toString().toStdString();
     r.auto_reason = r.mix_reason = reason.toStdString();
+    if (row.contains("audio_rms") || row.contains("band_10_110") || row.contains("band_all")) {
+        r.has_audio_stats = true;
+        r.audio_rms = row.value("audio_rms").toDouble();
+        r.band_10_110 = row.value("band_10_110").toDouble();
+        r.band_all = row.value("band_all").toDouble();
+    }
     return r;
 }
 

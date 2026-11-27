@@ -14,6 +14,7 @@ public:
     QString text() const;
     void clear();
     void focus_input();
+    void set_placeholder(const QString& text);
 
 signals:
     void text_changed(const QString& text);

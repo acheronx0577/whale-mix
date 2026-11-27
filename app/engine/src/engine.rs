@@ -537,6 +537,7 @@ pub fn run(
                     let row = json!({
                         "event_id": event_id, "source_id": file.source_id, "source_sha256": file.sha256,
                         "path": file.path, "channel": channel, "start_s": w.start_s, "end_s": w.end_s,
+                        "audio_rms": w.audio_rms, "band_10_110": w.band_10_110, "band_all": w.band_all,
                         "granularity": "coarse_window", "scores": scores, "automatic_label": label,
                         "automatic_reason": reason, "model_sha256": m.model.sha256,
                         "artifact_kind": m.artifact_kind, "fixture": fixture, "provisional": false,

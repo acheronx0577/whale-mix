@@ -18,6 +18,8 @@
 #include <QAbstractButton>
 #include <QSettings>
 #include <QFileInfo>
+#include <QPalette>
+#include <QColor>
 #include <QDir>
 #include <QKeyEvent>
 #include <QDirIterator>
@@ -85,8 +87,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     detail_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     detail_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     detail_scroll->setWidgetResizable(true);
+    detail_scroll->setAutoFillBackground(true);
+    detail_scroll->viewport()->setAutoFillBackground(true);
+    {
+        QPalette pal = detail_scroll->palette();
+        pal.setColor(QPalette::Window, QColor("#ffffff"));
+        pal.setColor(QPalette::Base, QColor("#ffffff"));
+        detail_scroll->setPalette(pal);
+        detail_scroll->viewport()->setPalette(pal);
+    }
     detail_scroll->setStyleSheet(
-        "QScrollArea { background: white; border: none; }"
+        "QScrollArea { background: #ffffff; border: none; }"
+        "QScrollArea > QWidget { background: #ffffff; }"
         "QScrollBar:vertical {"
         "  width: 8px;"
         "  background: transparent;"
@@ -108,6 +120,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     );
 
     detail_panel_ = new gui::DetailPanel(detail_scroll);
+    detail_panel_->setAutoFillBackground(true);
+    {
+        QPalette pal = detail_panel_->palette();
+        pal.setColor(QPalette::Window, QColor("#ffffff"));
+        pal.setColor(QPalette::Base, QColor("#ffffff"));
+        detail_panel_->setPalette(pal);
+    }
     detail_scroll->setWidget(detail_panel_);
     body_layout->addWidget(detail_scroll);
     detail_scroll_ = detail_scroll;

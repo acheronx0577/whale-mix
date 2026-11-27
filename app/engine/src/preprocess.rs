@@ -242,6 +242,14 @@ impl Resampler {
     }
 }
 
+/// Per-STFT-frame energy, used to label silent / low-frequency windows honestly.
+#[derive(Debug, Clone, Copy, Default)]
+struct FrameEnergy {
+    sumsq: f64,
+    band_10_110: f64,
+    band_all: f64,
+}
+
 /// One model window: start frame on the global grid and its `[1, bins, frames]` tensor (bin-major).
 #[derive(Debug, Clone)]
 pub struct Window {
@@ -249,6 +257,11 @@ pub struct Window {
     pub start_s: f64,
     pub end_s: f64,
     pub tensor: Vec<f32>,
+    /// Root-mean-square of the unwindowed samples that went into this window's STFT frames.
+    pub audio_rms: f64,
+    /// Summed power in 10–110 Hz vs. the full Nyquist band, across those frames.
+    pub band_10_110: f64,
+    pub band_all: f64,
 }
 
 pub struct ChannelPipeline {
@@ -258,6 +271,7 @@ pub struct ChannelPipeline {
     res_base: usize,
     res_total: usize,
     frames: VecDeque<Vec<f64>>,
+    energies: VecDeque<FrameEnergy>,
     frame_base: usize,
     frames_total: usize,
     next_window: usize,
@@ -279,6 +293,7 @@ impl ChannelPipeline {
             res_base: 0,
             res_total: 0,
             frames: VecDeque::new(),
+            energies: VecDeque::new(),
             frame_base: 0,
             frames_total: 0,
             next_window: 0,
@@ -333,7 +348,31 @@ impl ChannelPipeline {
                 .iter()
                 .map(|c| c.re * c.re + c.im * c.im)
                 .collect();
+            let hz_per_bin = self.spec.sample_rate as f64 / self.spec.n_fft as f64;
+            let b_lo = ((10.0 / hz_per_bin) - 1e-9).ceil() as usize;
+            let b_hi = ((110.0 / hz_per_bin) + 1e-9).floor() as usize;
+            let n_full = self.spec.n_fft / 2 + 1;
+            let mut band_all = 0.0;
+            let mut band_10_110 = 0.0;
+            for b in 0..n_full {
+                let c = self.scratch[b];
+                let e = c.re * c.re + c.im * c.im;
+                band_all += e;
+                if b >= b_lo && b <= b_hi {
+                    band_10_110 += e;
+                }
+            }
+            let mut sumsq = 0.0;
+            for i in 0..n_fft {
+                let s = self.res[start + i];
+                sumsq += s * s;
+            }
             self.frames.push_back(power);
+            self.energies.push_back(FrameEnergy {
+                sumsq,
+                band_10_110,
+                band_all,
+            });
             self.frames_total += 1;
         }
         let keep_from = self.frames_total * hop;
@@ -357,6 +396,7 @@ impl ChannelPipeline {
             .min(self.frames_total.saturating_sub(width));
         while self.frame_base < keep_from && !self.frames.is_empty() {
             self.frames.pop_front();
+            self.energies.pop_front();
             self.frame_base += 1;
         }
         out
@@ -375,11 +415,24 @@ impl ChannelPipeline {
             }
         }
         let start_s = (start * self.spec.hop_length) as f64 / self.spec.sample_rate as f64;
+        let mut sumsq = 0.0;
+        let mut band_10_110 = 0.0;
+        let mut band_all = 0.0;
+        for f in start..start + width {
+            let e = self.energies[f - self.frame_base];
+            sumsq += e.sumsq;
+            band_10_110 += e.band_10_110;
+            band_all += e.band_all;
+        }
+        let samples = (width * self.spec.n_fft) as f64;
         Window {
             start_frame: start,
             start_s,
             end_s: start_s + self.spec.window_span_s(),
             tensor,
+            audio_rms: if samples > 0.0 { (sumsq / samples).sqrt() } else { 0.0 },
+            band_10_110,
+            band_all,
         }
     }
 

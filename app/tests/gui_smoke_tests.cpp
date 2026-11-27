@@ -22,6 +22,8 @@
 #include "widgets/DetailPanel.h"
 #include "widgets/Sidebar.h"
 #include <QFontMetrics>
+#include <QPalette>
+#include <QColor>
 
 TEST(GuiSmokeTest, WindowCreation) {
     whalemix::MainWindow window;
@@ -307,18 +309,25 @@ TEST(GuiRedesignTest, UnifiedTableDropsBafAndLayaColumnsAndPadsReason) {
     QApplication::processEvents();
     t.set_rows(unified_rows(), true);
     ASSERT_TRUE(t.unified_mode());
-    ASSERT_EQ(t.column_count(), 5);
+    ASSERT_EQ(t.column_count(), 6);
     QStringList titles;
     for (int i = 0; i < t.column_count(); ++i) titles << t.column_title(i);
-    EXPECT_EQ(titles, QStringList({"WINDOW", "TIME", "CONFIDENCE", "REASON", "LABEL"}));
+    EXPECT_EQ(titles, QStringList({"WAV FILE / WINDOW", "TIME", "TIMELINE", "PEAK", "REASON", "LABEL"}));
     EXPECT_FALSE(titles.contains("BAF"));
     EXPECT_FALSE(titles.contains("LAYA"));
-    EXPECT_EQ(t.reason_display(0).toStdString(), "Blue whale A-call (\u2265 89.7% threshold)");
-    EXPECT_EQ(t.reason_display(1).toStdString(), "No call (< 89.7% threshold)");
-    // At full width the longest call / not-call REASON text plus 16px padding each side fits.
-    QFontMetrics fm(whalemix::fonts::body(13));
-    EXPECT_GE(t.column_span(3), fm.horizontalAdvance(t.reason_display(0)) + 32);
-    EXPECT_EQ(t.column_left(4), t.column_left(3) + t.column_span(3));
+    EXPECT_EQ(t.reason_display(0).toStdString(), "Blue whale A-call (\u2265 89.7%)");
+    EXPECT_EQ(t.reason_display(1).toStdString(), "Below threshold (< 89.7%)");
+    EXPECT_EQ(t.group_count(), 1);
+    // TIMELINE never overlaps or touches PEAK; LABEL sits on a stable right edge with a gutter.
+    EXPECT_LE(t.column_left(2) + t.column_span(2), t.column_left(3));
+    EXPECT_GE(t.column_left(3) - (t.column_left(2) + t.column_span(2)), 0);
+    EXPECT_EQ(t.column_left(5), t.column_left(4) + t.column_span(4));
+    EXPECT_LE(t.column_left(5) + t.column_span(5) + t.right_gutter(), t.viewport()->width());
+    EXPECT_GE(t.right_gutter(), 16);
+    // One row per WAV file until the group is expanded.
+    EXPECT_EQ(t.visible_count(), 1);
+    t.set_group_expanded(0, true);
+    EXPECT_EQ(t.visible_count(), 1 + 40);
     // The scrollbar lives inside the rounded card: below the header, inset from the right border.
     auto* bar = t.overlay_scroll_bar();
     ASSERT_NE(bar, nullptr);
@@ -328,15 +337,16 @@ TEST(GuiRedesignTest, UnifiedTableDropsBafAndLayaColumnsAndPadsReason) {
     EXPECT_LE(bar->geometry().right(), t.viewport()->width() - 1 - 4);
     EXPECT_LE(bar->geometry().bottom(), t.viewport()->height() - 1 - 4);
     EXPECT_FALSE(t.verticalScrollBar()->isVisible());
-    // With the inspector open the table is ~760px wide: REASON still fits and LABEL stays visible.
-    t.resize(760, 600);
-    QApplication::processEvents();
-    // Inspector open: at least the medium variant ("Blue whale A-call (>= 89.7%)") still fits.
-    const QStringList v = whalemix::gui::display::reason_variants(unified_rows()[0], 0.897);
-    EXPECT_GE(t.column_span(3), fm.horizontalAdvance(v[1]) + 32);
-    const QStringList nv = whalemix::gui::display::reason_variants(unified_rows()[1], 0.897);
-    EXPECT_GE(t.column_span(3), fm.horizontalAdvance(nv[0]) + 32);
-    EXPECT_LE(t.column_left(4) + 112, t.viewport()->width());
+    // Inspector-open width (~760px, and the tighter 1280x800-with-inspector case ~600px):
+    // TIMELINE still ends before PEAK, LABEL stays fully visible inside the gutter.
+    for (int width : {760, 600}) {
+        t.resize(width, 600);
+        QApplication::processEvents();
+        EXPECT_LE(t.column_left(2) + t.column_span(2), t.column_left(3));
+        EXPECT_LE(t.column_left(5) + t.column_span(5) + t.right_gutter(), t.viewport()->width());
+        EXPECT_GE(t.column_span(4), 96);
+        EXPECT_LE(t.column_left(5) + 112, t.viewport()->width() - t.right_gutter() + 16);
+    }
     // Legacy CSV rows keep the seven Blue A + Laya columns.
     std::vector<whalemix::Row> legacy = unified_rows();
     for (auto& r : legacy) r.audio_path.clear();
@@ -350,7 +360,7 @@ TEST(GuiRedesignTest, PlainEnglishReasonsKeepExportCodes) {
     EXPECT_EQ(whalemix::gui::display::why_long(rows[0], 0.897).toStdString(),
               "Blue whale A-call detected \xe2\x80\x94 96.9% confidence (above the 89.7% threshold).");
     EXPECT_EQ(whalemix::gui::display::why_long(rows[1], 0.897).toStdString(),
-              "No whale call detected \xe2\x80\x94 0.5% confidence (below the 89.7% threshold).");
+              "No whale call detected \xe2\x80\x94 Below threshold (< 89.7%). Confidence is 0.5%, below the 89.7% threshold.");
     EXPECT_EQ(rows[0].mix_reason, "blue_a");  // display text never leaks into exported rows
     EXPECT_EQ(whalemix::gui::display::eta_text(700).toStdString(), "Est. ~11m 40s left");
 }
@@ -371,9 +381,12 @@ TEST(GuiRedesignTest, InspectorStartsCollapsedOpensOnClickAndCloses) {
     EXPECT_FALSE(window.center_panel()->review_pill()->isVisible());
     const int table_w_collapsed = window.center_panel()->table()->width();
 
-    // Click the first data row (header is 34px, rows are 49px)
-    auto* vp = window.center_panel()->table()->viewport();
-    QTest::mouseClick(vp, Qt::LeftButton, Qt::NoModifier, QPoint(200, 34 + 49 + 20));
+    // Expand the WAV group, then click window #2 (header 34px, rows 52px).
+    auto* table = window.center_panel()->table();
+    table->set_group_expanded(0, true);
+    QApplication::processEvents();
+    auto* vp = table->viewport();
+    QTest::mouseClick(vp, Qt::LeftButton, Qt::NoModifier, QPoint(200, 34 + 52 + 52 + 20));
     QApplication::processEvents();
     EXPECT_TRUE(window.inspector_visible());
     EXPECT_EQ(window.state()->selected_index(), 1);
@@ -387,8 +400,8 @@ TEST(GuiRedesignTest, InspectorStartsCollapsedOpensOnClickAndCloses) {
     QApplication::processEvents();
     EXPECT_FALSE(window.inspector_visible());
 
-    // Click again, then Esc collapses it
-    QTest::mouseClick(vp, Qt::LeftButton, Qt::NoModifier, QPoint(200, 34 + 20));
+    // Click a window row again, then Esc collapses the inspector
+    QTest::mouseClick(vp, Qt::LeftButton, Qt::NoModifier, QPoint(200, 34 + 52 + 20));
     QApplication::processEvents();
     EXPECT_TRUE(window.inspector_visible());
     QTest::keyClick(&window, Qt::Key_Escape);
@@ -497,6 +510,56 @@ TEST(GuiRedesignTest, WavFilesAndTenSecondWindowsLabels) {
     EXPECT_EQ(window.center_panel()->meta_text().toStdString(), "1 10S WINDOW FROM 1 WAV FILE");
     window.center_panel()->set_rows(rows, true, 2);
     EXPECT_EQ(window.center_panel()->meta_text().toStdString(), "40 10S WINDOWS FROM 2 WAV FILES");
+}
+
+TEST(GuiRedesignTest, SignalReasonsAndInspectorIsWhite) {
+    using whalemix::gui::display::signal_reason;
+    whalemix::Row silent;
+    silent.mix_label = silent.auto_label = "not-call";
+    silent.bat = "0.012";
+    silent.has_audio_stats = true;
+    silent.audio_rms = 1e-6;
+    silent.band_10_110 = 0.0;
+    silent.band_all = 0.0;
+    EXPECT_EQ(signal_reason(silent, 0.897).toStdString(), "Silent / near-zero audio");
+
+    whalemix::Row none;
+    none.mix_label = none.auto_label = "not-call";
+    none.bat = "0.040";
+    none.has_audio_stats = true;
+    none.audio_rms = 0.05;
+    none.band_10_110 = 0.001;
+    none.band_all = 1.0;
+    EXPECT_EQ(signal_reason(none, 0.897).toStdString(),
+              "No low-freq signal (10\xe2\x80\x93" "110 Hz)");
+
+    whalemix::Row other;
+    other.mix_label = other.auto_label = "not-call";
+    other.bat = "0.120";
+    other.has_audio_stats = true;
+    other.audio_rms = 0.05;
+    other.band_10_110 = 0.4;
+    other.band_all = 1.0;
+    EXPECT_EQ(signal_reason(other, 0.897).toStdString(), "Other low-freq sound (< 89.7%)");
+
+    whalemix::Row border;
+    border.mix_label = border.auto_label = "not-call";
+    border.bat = "0.742";
+    EXPECT_EQ(signal_reason(border, 0.897).toStdString(), "Borderline signal (74.2%)");
+
+    whalemix::Row call;
+    call.mix_label = call.auto_label = "call";
+    call.bat = "0.964";
+    EXPECT_EQ(signal_reason(call, 0.897).toStdString(), "Blue whale A-call (\u2265 89.7%)");
+
+    whalemix::MainWindow window;
+    window.resize(1440, 900);
+    auto* insp = qobject_cast<QScrollArea*>(window.inspector());
+    ASSERT_NE(insp, nullptr);
+    const QColor white("#ffffff");
+    EXPECT_EQ(insp->palette().color(QPalette::Window), white);
+    EXPECT_EQ(insp->viewport()->palette().color(QPalette::Window), white);
+    EXPECT_EQ(window.detail_panel()->palette().color(QPalette::Window), white);
 }
 
 int main(int argc, char* argv[]) {

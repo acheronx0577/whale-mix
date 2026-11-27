@@ -463,23 +463,27 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     QString disp_file = file_name_.isEmpty() ? "No source yet" : file_name_;
     p.drawText(QRect(24, src_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, fm_src.elidedText(disp_file, Qt::ElideRight, 192));
 
-    // Two lines so units never wrap: "2,135 WAV files" / "65,000 10s windows".
+    // Two PILES-style rows so 10,000 / 335,450 never wrap: label left, count right.
     int hint_y = src_y + 18 + 6;
-    QFont hint_font = fonts::body(14);
-    p.setFont(hint_font);
-    p.setPen(theme::kSlate);
-    const QString wav_line = display::wav_files(num_sounds_);
-    const QString win_line = unified_
-        ? display::windows_10s(num_pictures_)
-        : (display::thousands(num_pictures_) + (num_pictures_ == 1 ? " picture" : " pictures"));
-    QFontMetrics fm_hint(hint_font);
-    p.drawText(QRect(24, hint_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter,
-               fm_hint.elidedText(wav_line, Qt::ElideRight, 192));
-    p.drawText(QRect(24, hint_y + 18, 192, 18), Qt::AlignLeft | Qt::AlignVCenter,
-               fm_hint.elidedText(win_line, Qt::ElideRight, 192));
+    QFont src_lab = fonts::body(14);
+    QFont src_cnt = fonts::mono(14, 450);
+    QFontMetrics fm_lab(src_lab);
+    QFontMetrics fm_cnt(src_cnt);
+    const int row_h = 26;
+    auto paint_src_row = [&](int y, const QString& name, const QString& count) {
+        p.setFont(src_lab);
+        p.setPen(theme::kInk);
+        p.drawText(QRect(24, y, 192, row_h), Qt::AlignLeft | Qt::AlignVCenter, name);
+        p.setFont(src_cnt);
+        const int cw = fm_cnt.horizontalAdvance(count);
+        p.drawText(216 - cw, y + (row_h - fm_cnt.height()) / 2 + fm_cnt.ascent(), count);
+    };
+    paint_src_row(hint_y, "WAV files", display::thousands(num_sounds_));
+    const QString right_name = unified_ ? "10s windows" : (num_pictures_ == 1 ? "picture" : "pictures");
+    paint_src_row(hint_y + row_h, right_name, display::thousands(num_pictures_));
 
     // 7. What the labels mean
-    int reason_eyebrow_y = hint_y + 36 + 20;
+    int reason_eyebrow_y = hint_y + row_h * 2 + 16;
     if (unified_) {
         Eyebrow::paint(&p, QRect(24, reason_eyebrow_y, 192, 14), "WHAT IT DETECTS");
         int y = reason_eyebrow_y + 14 + 10;

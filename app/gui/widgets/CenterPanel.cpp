@@ -22,7 +22,7 @@ CenterPanel::CenterPanel(QWidget* parent) : QWidget(parent) {
     head_layout->setContentsMargins(0, 0, 0, 0);
     head_layout->setSpacing(0);
 
-    auto* title_label = new QLabel("Score windows", head_widget);
+    auto* title_label = new QLabel("Score WAV files", head_widget);
     title_label->setFont(fonts::heading(28));
     title_label->setStyleSheet("color: #0b1640;");
     head_layout->addWidget(title_label, 0, Qt::AlignBottom | Qt::AlignLeft);

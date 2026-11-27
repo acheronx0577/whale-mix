@@ -25,6 +25,12 @@ struct Row {
     // Engine rows only: the analysed recording, so the detail panel can draw the window's spectrogram.
     std::string audio_path;
     int audio_channel = 0;
+
+    // Optional per-window audio stats from the engine (absent on older CSVs / cached jsonl).
+    bool has_audio_stats = false;
+    double audio_rms = 0.0;
+    double band_10_110 = 0.0;
+    double band_all = 0.0;
 };
 
 } // namespace whalemix

@@ -16,5 +16,9 @@ inline const QColor kNight{"#060c26"};
 inline const QColor kSoft{"#94a3c4"};
 inline const QColor kSpectroDashedBorder{"#c9d9f3"};
 inline const QColor kPrimaryHover{"#1733b4"};
+inline const QColor kAmber{"#d97706"};
+inline const QColor kTickMute{"#c9d4ea"};
+inline const QColor kTickSilent{"#e2e8f4"};
+inline const QColor kTimelineTrack{"#f0f4fc"};
 
 } // namespace whalemix::theme

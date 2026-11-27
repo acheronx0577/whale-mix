@@ -2,8 +2,9 @@
 
 #include <QAbstractScrollArea>
 #include <QScrollBar>
-#include <vector>
+#include <QSet>
 #include <QString>
+#include <vector>
 #include "whalemix/row.h"
 
 namespace whalemix::gui {
@@ -34,29 +35,35 @@ public:
     void select_first();
     void select_last();
 
-    // Unified WhaleMix light model rows (engine runs): WINDOW, TIME, CONFIDENCE, REASON, LABEL.
+    // Unified WhaleMix light model (engine runs): grouped WAV rows + 10s windows.
     // Legacy Blue A + Laya CSVs keep the original seven columns. Detected from the first row.
     void set_unified_mode(bool unified);
-    // Blue A call threshold shown in the plain-English REASON text.
     void set_threshold(double t) { threshold_ = t; viewport()->update(); }
     bool unified_mode() const { return unified_; }
-    int column_count() const { return unified_ ? 5 : 7; }
+    int column_count() const { return unified_ ? 6 : 7; }
     QString column_title(int col) const;
-    // Display text of a row's REASON cell (plain English in unified mode).
+    // Display text of a window row's REASON cell (plain English in unified mode).
     QString reason_display(size_t model_index) const;
     int column_left(int col) const { return column_x(col); }
     int column_span(int col) const { return column_width(col); }
+    // Stable right gutter so the overlay scrollbar never clips LABEL pills.
+    int right_gutter() const;
+    int label_pad() const { return kCellPad; }
 
-    // Slim scrollbar drawn inside the rounded table card (below the header, inset from the right
-    // border). The area's own scrollbar stays hidden and only holds the scroll range and value.
+    void set_group_expanded(int group, bool expanded);
+    bool group_expanded(int group) const;
+    int group_count() const { return static_cast<int>(groups_.size()); }
+    int view_item_count() const { return unified_ ? static_cast<int>(view_items_.size())
+                                                  : static_cast<int>(visible_indices_.size()); }
+
     QScrollBar* overlay_scroll_bar() const { return overlay_bar_; }
 
     const std::vector<int>& visible_indices() const { return visible_indices_; }
-    int visible_count() const { return static_cast<int>(visible_indices_.size()); }
+    int visible_count() const { return view_item_count(); }
 
 signals:
     void selection_changed(int model_index);
-    // A row was clicked with the mouse (opens the inspector).
+    // A window row (or a timeline tick) was clicked with the mouse (opens the inspector).
     void row_clicked(int model_index);
 
 protected:
@@ -79,6 +86,7 @@ private:
     int row_at_pos(int y) const;
     int column_x(int col) const;
     int column_width(int col) const;
+    void unified_column_widths(int out[6]) const;
 
     struct CachedRow {
         QString win_name;
@@ -113,15 +121,50 @@ private:
     int selected_model_index_ = -1;
     int hovered_visible_row_ = -1;
     int pressed_visible_row_ = -1;
+    int selected_view_ = -1;
+
+    struct WavGroup {
+        QString key;
+        QString filename;
+        int first = 0;
+        int count = 0;
+        int call_count = 0;
+        int borderline_count = 0;
+        double peak = 0.0;
+        double duration_s = 0.0;
+        bool expanded = false;
+        QString label;
+        QString summary;
+    };
+    struct ViewItem {
+        enum Type { Group, Window } type = Window;
+        int group = -1;
+        int model_index = -1;
+    };
+    std::vector<WavGroup> groups_;
+    std::vector<ViewItem> view_items_;
+    QSet<QString> expanded_keys_;
+
+    void rebuild_groups_from(size_t from_row);
+    void rebuild_all_groups();
+    void refresh_group(int g);
+    void rebuild_view_items();
+    QString group_key(const Row& r) const;
+    QString group_filename(const Row& r) const;
+    int group_for_model(int model_index) const;
+    int view_index_for_model(int model_index) const;
+    int tick_at(int group, int x) const;
+    QRect timeline_rect(int row_y) const;
+    void paint_header(QPainter& p, int w) const;
+    void paint_timeline(QPainter& p, const QRect& r, int group, int active_model) const;
+    void paint_reason(QPainter& p, const QRect& r, const QString& text, const QColor& color) const;
+    void move_selection(int delta_views, int page);
 
     static constexpr int kHeaderHeight = 34;
-    static constexpr int kRowHeight = 49;
+    static constexpr int kRowHeight = 52;
     static constexpr int kColWidths[6] = {136, 146, 84, 84, 116, 88}; // col 6 = rest
-    // WINDOW and TIME keep one width (their elisions are cached); CONFIDENCE and LABEL tighten
-    // when the inspector is open so REASON keeps room. Col 3 (REASON) = rest.
-    static constexpr int kUnifiedWidths[5] = {168, 176, 140, 0, 136};
-    static constexpr int kUnifiedCompactWidths[5] = {168, 176, 108, 0, 112};
     static constexpr int kCellPad = 16;  // left padding inside every cell, and minimum right padding
+    static constexpr int kLabelGutter = 22; // scrollbar-gutter: stable + right padding
 };
 
 } // namespace whalemix::gui

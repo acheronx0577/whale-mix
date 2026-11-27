@@ -9,10 +9,10 @@
 namespace whalemix::gui {
 
 SearchBox::SearchBox(QWidget* parent) : QWidget(parent) {
-    setFixedSize(182, 36);
+    setFixedSize(200, 36);
 
     line_edit_ = new QLineEdit(this);
-    line_edit_->setPlaceholderText("Search windows");
+    line_edit_->setPlaceholderText("Search WAV files");
     line_edit_->setFont(fonts::body(14));
     line_edit_->setStyleSheet(
         "QLineEdit { border: none; background: transparent; color: #0b1640; padding: 0; }"
@@ -21,7 +21,7 @@ SearchBox::SearchBox(QWidget* parent) : QWidget(parent) {
     line_edit_->installEventFilter(this);
 
     // Layout inside: 12px left padding + 17px icon + 8px gap + line_edit + 12px right padding
-    line_edit_->setGeometry(37, 2, 182 - 37 - 12, 32);
+    line_edit_->setGeometry(37, 2, 200 - 37 - 12, 32);
 
     connect(line_edit_, &QLineEdit::textChanged, this, &SearchBox::text_changed);
 }
@@ -74,4 +74,9 @@ void SearchBox::paintEvent(QPaintEvent* /*event*/) {
     svg.render(&p, icon_rect);
 }
 
+void SearchBox::set_placeholder(const QString& text) {
+    line_edit_->setPlaceholderText(text);
+}
+
 } // namespace whalemix::gui
+
