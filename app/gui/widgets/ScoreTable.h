@@ -17,6 +17,8 @@ public:
     // analysis run costs O(new rows) per refresh instead of O(all rows).
     void append_rows(const std::vector<Row>& rows, size_t from, bool has_file);
     size_t row_count() const { return all_rows_.size(); }
+    // Replace one row in place (manual label / undo) without rebuilding the other rows.
+    void update_row(size_t idx, const Row& row);
     void set_filter(const QString& pile, const QString& query);
 
     int selected_model_index() const { return selected_model_index_; }
@@ -67,6 +69,7 @@ private:
         QSize chip_size;
         std::string search_haystack_lower;
     };
+    static CachedRow make_cached_row(const Row& r);
     std::vector<CachedRow> cached_rows_;
     void update_elided_cache();
     void update_elided_cache(size_t from);

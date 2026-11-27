@@ -12,6 +12,11 @@
 #include <QLabel>
 #include <QScrollArea>
 #include <QKeyEvent>
+#include <QFile>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <vector>
 
 namespace whalemix::gui {
 
@@ -39,6 +44,7 @@ void SpectrogramView::set_gain(int gain) {
 }
 
 void SpectrogramView::clear() {
+    audio_caption_.clear();
     image_file_.clear();
     resolved_path_.clear();
     loaded_image_ = QImage();
@@ -72,6 +78,7 @@ QString SpectrogramView::resolve_image_path(const QString& image_file, const QSt
 }
 
 void SpectrogramView::set_image_info(const QString& image_file, const QString& csv_folder) {
+    audio_caption_.clear();
     image_file_ = image_file;
     csv_folder_ = csv_folder;
 
@@ -114,7 +121,7 @@ void SpectrogramView::set_image_info(const QString& image_file, const QString& c
     load_image_async(path);
 }
 
-void SpectrogramView::load_image_async(const QString& resolved_path) {
+void SpectrogramView::load_async(const QString& resolved_path, std::function<QImage()> load) {
     state_ = State::Loading;
     update();
 
@@ -149,12 +156,142 @@ void SpectrogramView::load_image_async(const QString& resolved_path) {
         update();
     });
 
-    QFuture<QImage> future = QtConcurrent::run([resolved_path]() {
+    QFuture<QImage> future = QtConcurrent::run(std::move(load));
+    watcher->setFuture(future);
+}
+
+void SpectrogramView::load_image_async(const QString& resolved_path) {
+    load_async(resolved_path, [resolved_path]() {
         QImageReader reader(resolved_path);
         reader.setAutoTransform(true);
         return reader.read();
     });
-    watcher->setFuture(future);
+}
+
+void SpectrogramView::set_audio_window(const QString& wav_path, double start_s, double end_s, int channel) {
+    const QString key = QString("wav:%1|%2|%3|%4").arg(wav_path).arg(start_s, 0, 'f', 3).arg(end_s, 0, 'f', 3).arg(channel);
+    image_file_ = key;
+    audio_caption_ = QString("%1 \xc2\xb7 ch%2 \xc2\xb7 %3\xe2\x80\x93%4 s \xc2\xb7 0\xe2\x80\x93250 Hz")
+                         .arg(QFileInfo(wav_path).fileName()).arg(channel).arg(start_s, 0, 'f', 1).arg(end_s, 0, 'f', 1);
+    csv_folder_.clear();
+    resolved_path_ = key;
+    {
+        std::lock_guard<std::mutex> lock(s_cache_mutex);
+        auto it = s_cache_map.find(key);
+        if (it != s_cache_map.end()) {
+            loaded_image_ = it->second;
+            cached_pixmap_ = QPixmap::fromImage(loaded_image_);
+            state_ = State::Loaded;
+            s_cache_lru.remove(key);
+            s_cache_lru.push_front(key);
+            update();
+            return;
+        }
+    }
+    load_async(key, [wav_path, start_s, end_s, channel]() { return render_wav_window(wav_path, start_s, end_s, channel); });
+}
+
+namespace {
+quint32 le32(const QByteArray& b, qsizetype at) {
+    return quint32(quint8(b[at])) | quint32(quint8(b[at + 1])) << 8 | quint32(quint8(b[at + 2])) << 16 |
+           quint32(quint8(b[at + 3])) << 24;
+}
+quint16 le16(const QByteArray& b, qsizetype at) { return quint16(quint8(b[at]) | quint8(b[at + 1]) << 8); }
+}  // namespace
+
+QImage SpectrogramView::render_wav_window(const QString& wav_path, double start_s, double end_s, int channel) {
+    QFile f(wav_path);
+    if (!f.open(QIODevice::ReadOnly) || end_s <= start_s) return {};
+    const QByteArray head = f.read(12);
+    if (head.size() < 12 || !head.startsWith("RIFF") || head.mid(8, 4) != "WAVE") return {};
+    quint16 format = 0, channels = 0, bits = 0;
+    quint32 rate = 0;
+    qint64 data_pos = -1, data_len = 0;
+    while (!f.atEnd()) {
+        const QByteArray ch = f.read(8);
+        if (ch.size() < 8) break;
+        const quint32 len = le32(ch, 4);
+        if (ch.startsWith("fmt ")) {
+            const QByteArray fmt = f.read(len);
+            if (fmt.size() < 16) return {};
+            format = le16(fmt, 0);
+            channels = le16(fmt, 2);
+            rate = le32(fmt, 4);
+            bits = le16(fmt, 14);
+            if (format == 0xFFFE && fmt.size() >= 26) format = le16(fmt, 24);
+            if (len & 1) f.read(1);
+        } else if (ch.startsWith("data")) {
+            data_pos = f.pos();
+            data_len = len;
+            break;
+        } else if (!f.seek(f.pos() + len + (len & 1))) {
+            break;
+        }
+    }
+    const bool pcm16 = format == 1 && bits == 16, f32 = format == 3 && bits == 32;
+    if (data_pos < 0 || rate == 0 || channels == 0 || channel >= channels || !(pcm16 || f32)) return {};
+    const int bps = bits / 8, frame_bytes = bps * channels;
+    const qint64 total = data_len / frame_bytes;
+    const qint64 a = qBound<qint64>(0, qint64(start_s * rate), total);
+    const qint64 b = qBound<qint64>(a, qint64(end_s * rate), total);
+    if (b - a < 64 || !f.seek(data_pos + a * frame_bytes)) return {};
+    const QByteArray raw = f.read((b - a) * frame_bytes);
+    const qint64 n = raw.size() / frame_bytes;
+    std::vector<double> x(static_cast<size_t>(n));
+    for (qint64 i = 0; i < n; ++i) {
+        const char* p = raw.constData() + i * frame_bytes + channel * bps;
+        if (pcm16) {
+            x[size_t(i)] = qint16(quint16(quint8(p[0]) | quint8(p[1]) << 8)) / 32768.0;
+        } else {
+            float v;
+            std::memcpy(&v, p, 4);
+            x[size_t(i)] = v;
+        }
+    }
+    int nfft = 64;
+    while (nfft < int(rate / 2) && nfft < 4096) nfft *= 2;  // ~0.5 s analysis window
+    if (n < nfft) nfft = 64;
+    const int hop = std::max(1, nfft / 8);
+    const double fmax = std::min(250.0, rate / 2.0);
+    const int bins = std::max(2, int(fmax / rate * nfft));
+    const int frames = n >= nfft ? int((n - nfft) / hop) + 1 : 0;
+    if (frames < 2) return {};
+    std::vector<double> win(static_cast<size_t>(nfft));
+    std::vector<double> db(static_cast<size_t>(frames) * static_cast<size_t>(bins));
+    for (int i = 0; i < nfft; ++i) win[size_t(i)] = 0.5 - 0.5 * std::cos(2.0 * M_PI * i / (nfft - 1));
+    std::vector<double> cos_t(static_cast<size_t>(nfft)), sin_t(static_cast<size_t>(nfft)), frame(static_cast<size_t>(nfft));
+    for (int i = 0; i < nfft; ++i) {
+        cos_t[size_t(i)] = std::cos(2.0 * M_PI * i / nfft);
+        sin_t[size_t(i)] = std::sin(2.0 * M_PI * i / nfft);
+    }
+    for (int t = 0; t < frames; ++t) {
+        const double* s = x.data() + size_t(t) * size_t(hop);
+        for (int i = 0; i < nfft; ++i) frame[size_t(i)] = s[i] * win[size_t(i)];
+        for (int k = 0; k < bins; ++k) {
+            double re = 0, im = 0;
+            size_t idx = 0;
+            for (int i = 0; i < nfft; ++i) {
+                re += frame[size_t(i)] * cos_t[idx];
+                im -= frame[size_t(i)] * sin_t[idx];
+                idx += size_t(k);
+                if (idx >= size_t(nfft)) idx -= size_t(nfft);
+            }
+            db[size_t(t) * size_t(bins) + size_t(k)] = 10.0 * std::log10(re * re + im * im + 1e-20);
+        }
+    }
+    std::vector<double> sorted = db;
+    std::sort(sorted.begin(), sorted.end());
+    const double lo = sorted[size_t(sorted.size() * 0.05)], hi = sorted[size_t((sorted.size() - 1) * 0.995)];
+    QImage img(frames, bins, QImage::Format_RGB32);
+    for (int t = 0; t < frames; ++t) {
+        for (int k = 0; k < bins; ++k) {
+            const double v = qBound(0.0, (db[size_t(t) * size_t(bins) + size_t(k)] - lo) / std::max(1e-9, hi - lo), 1.0);
+            // paper (#f4f8ff) -> navy (#0b1640)
+            const int r = int(0xf4 + (0x0b - 0xf4) * v), g = int(0xf8 + (0x16 - 0xf8) * v), bl = int(0xff + (0x40 - 0xff) * v);
+            img.setPixel(t, bins - 1 - k, qRgb(r, g, bl));
+        }
+    }
+    return img;
 }
 
 void SpectrogramView::paintEvent(QPaintEvent* /*event*/) {
@@ -234,11 +371,12 @@ void SpectrogramView::paintEvent(QPaintEvent* /*event*/) {
         cap_text = QString("image_file: %1 (not found)").arg(image_file_);
         break;
     case State::CouldNotRead:
-        cap_text = QString("image_file: %1 (could not read)").arg(image_file_);
+        cap_text = audio_caption_.isEmpty() ? QString("image_file: %1 (could not read)").arg(image_file_)
+                                            : audio_caption_ + " (could not read audio)";
         break;
     case State::Loading:
     case State::Loaded:
-        cap_text = QString("image_file: %1").arg(image_file_);
+        cap_text = audio_caption_.isEmpty() ? QString("image_file: %1").arg(image_file_) : audio_caption_;
         break;
     }
 

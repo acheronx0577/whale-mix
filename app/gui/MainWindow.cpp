@@ -184,6 +184,7 @@ void MainWindow::connect_engine() {
         // Engine results replace the table; they are written under the run directory, not a CSV.
         state_.set_rows({}, QDir(run_dir).filePath("out/results.partial.jsonl"));
         top_bar_->set_file_name(QFileInfo(run_dir).fileName());
+        sidebar_->set_source_info(QFileInfo(run_dir).fileName(), 0, 0);
         update_all_views();
         status_bar_->set_status(QString("Analyzing audio: 0 of %1 files").arg(total));
     });
@@ -212,7 +213,6 @@ void MainWindow::append_engine_rows() {
     if (fresh.isEmpty()) return;
     const bool first = state_.rows().empty();
     auto& rows = state_.mutable_rows();
-    rows.reserve(rows.size() + static_cast<size_t>(fresh.size()));
     for (const QJsonObject& obj : fresh) rows.push_back(row_from_engine_json(obj));
     if (first) {
         state_.set_rows(std::move(rows), state_.source_path());  // picks the first call, emits signals
@@ -238,6 +238,7 @@ void MainWindow::flush_engine_view() {
     }
     const int total = static_cast<int>(rows.size());
     sidebar_->set_counts(engine_counts_[0], engine_counts_[1], engine_counts_[2], total);
+    sidebar_->set_source_info(QFileInfo(engine_->run_dir()).fileName(), static_cast<int>(engine_sounds_.size()), total);
     center_panel_->append_rows(rows, from, !state_.source_path().isEmpty(),
                                static_cast<int>(engine_sounds_.size()));
 }
@@ -410,13 +411,43 @@ void MainWindow::set_manual_label(const QString& label) {
     auto& r = state_.mutable_rows()[idx];
     undo_stack_.push_back(UndoEntry{idx, r.mix_label, r.mix_reason});
 
+    const std::string old_label = r.mix_label;
     whalemix::set_label(r, label.toStdString());
     state_.set_unsaved_overrides(true);
 
-    update_all_views();
+    refresh_row(idx, old_label);
 
     QString win_name = QString::fromStdString(r.candidate_id.empty() ? r.sample_id : r.candidate_id);
     status_bar_->set_status(QString("%1 set to %2").arg(win_name).arg(label));
+}
+
+// A single row changed label: update counts, that table row and the detail panel without
+// rebuilding every row (a 10,000-file run has ~335k rows).
+void MainWindow::refresh_row(int idx, const std::string& old_label) {
+    if (center_panel_->shown_rows() != state_.rows().size()) {
+        update_all_views();
+        return;
+    }
+    const auto& r = state_.rows()[static_cast<size_t>(idx)];
+    auto bump = [this](const std::string& label, int d) {
+        if (label == "call") engine_counts_[0] += d;
+        else if (label == "not-call") engine_counts_[1] += d;
+        else if (label == "review") engine_counts_[2] += d;
+    };
+    bump(old_label, -1);
+    bump(r.mix_label, +1);
+    sidebar_->set_counts(engine_counts_[0], engine_counts_[1], engine_counts_[2], static_cast<int>(state_.rows().size()));
+    bool has_manual = r.mix_reason == "manual";
+    for (const auto& e : undo_stack_) {
+        if (has_manual) break;
+        const auto& u = state_.rows()[static_cast<size_t>(e.row_index)];
+        has_manual = u.mix_reason == "manual";
+    }
+    sidebar_->set_has_manual(has_manual);
+    center_panel_->update_row(static_cast<size_t>(idx), r, old_label);
+    if (idx == state_.selected_index()) {
+        detail_panel_->set_row(&r, QFileInfo(state_.source_path()).absolutePath());
+    }
 }
 
 void MainWindow::undo_override() {
@@ -427,9 +458,10 @@ void MainWindow::undo_override() {
 
     if (entry.row_index >= 0 && entry.row_index < static_cast<int>(state_.rows().size())) {
         auto& r = state_.mutable_rows()[entry.row_index];
+        const std::string old_label = r.mix_label;
         r.mix_label = entry.prev_label;
         r.mix_reason = entry.prev_reason;
-        update_all_views();
+        refresh_row(entry.row_index, old_label);
 
         QString win_name = QString::fromStdString(r.candidate_id.empty() ? r.sample_id : r.candidate_id);
         status_bar_->set_status(QString("Restored %1").arg(win_name));

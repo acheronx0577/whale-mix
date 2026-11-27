@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 #include <QApplication>
+#include <cmath>
+#include <QDataStream>
+#include <QTemporaryDir>
 #include <QFile>
 #include <QImage>
 #include <QPixmap>
@@ -9,6 +12,7 @@
 #include "widgets/Kbd.h"
 #include "widgets/PillButton.h"
 #include "widgets/ScoreTable.h"
+#include "widgets/SpectrogramView.h"
 #include "whalemix/table.h"
 #include "whalemix/csv.h"
 
@@ -195,6 +199,37 @@ TEST(GuiSmokeTest, DetailPanelPlaybackAndAmplify) {
     EXPECT_EQ(shot.width(), 1440);
     EXPECT_EQ(shot.height(), 800);
     shot.save("C:/Users/IamTh/.gemini/antigravity/brain/f0c1155d-c01c-4413-86a8-5249f9fad1a1/cpp_app_parity_verified.png");
+}
+
+TEST(GuiSmokeTest, EngineRowSpectrogramRendersFromWav) {
+    // A 2 kHz WAV with an 80 Hz tone: the rendered 0-250 Hz window must be darkest near 80 Hz.
+    QTemporaryDir tmp;
+    const QString path = tmp.filePath("tone.wav");
+    {
+        QFile f(path);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        const quint32 rate = 2000, n = rate * 12;
+        QDataStream s(&f);
+        s.setByteOrder(QDataStream::LittleEndian);
+        s.writeRawData("RIFF", 4);
+        s << quint32(36 + n * 2);
+        s.writeRawData("WAVEfmt ", 8);
+        s << quint32(16) << quint16(1) << quint16(1) << rate << quint32(rate * 2) << quint16(2) << quint16(16);
+        s.writeRawData("data", 4);
+        s << quint32(n * 2);
+        for (quint32 i = 0; i < n; ++i) s << qint16(std::lround(12000.0 * std::sin(2 * M_PI * 80.0 * i / rate)));
+    }
+    const QImage img = whalemix::gui::SpectrogramView::render_wav_window(path, 1.0, 11.0, 0);
+    ASSERT_FALSE(img.isNull());
+    int darkest_row = -1, darkest = 256;
+    for (int y = 0; y < img.height(); ++y) {
+        const int v = qRed(img.pixel(img.width() / 2, y));
+        if (v < darkest) { darkest = v; darkest_row = y; }
+    }
+    const double hz = 250.0 * (img.height() - 1 - darkest_row) / img.height();
+    EXPECT_NEAR(hz, 80.0, 6.0);
+    EXPECT_TRUE(whalemix::gui::SpectrogramView::render_wav_window(path, 11.0, 1.0, 0).isNull());
+    EXPECT_TRUE(whalemix::gui::SpectrogramView::render_wav_window(path, 1.0, 11.0, 3).isNull());
 }
 
 TEST(GuiSmokeTest, StreamingAppendMatchesFullRebuild) {

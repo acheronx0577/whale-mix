@@ -42,7 +42,7 @@ ScoreTable::ScoreTable(QWidget* parent) : QAbstractScrollArea(parent) {
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 }
 
-void ScoreTable::cache_row(const Row& r) {
+ScoreTable::CachedRow ScoreTable::make_cached_row(const Row& r) {
     CachedRow c;
     std::string raw_name = r.candidate_id.empty() ? r.sample_id : r.candidate_id;
     c.win_name = QString::fromStdString(raw_name);
@@ -54,7 +54,25 @@ void ScoreTable::cache_row(const Row& r) {
     c.label_str = QString::fromStdString(r.mix_label);
     c.chip_size = Chip::size_for_label(c.label_str);
     c.search_haystack_lower = format::search_haystack(r);
-    cached_rows_.push_back(std::move(c));
+    return c;
+}
+
+void ScoreTable::cache_row(const Row& r) { cached_rows_.push_back(make_cached_row(r)); }
+
+void ScoreTable::update_row(size_t idx, const Row& row) {
+    if (idx >= all_rows_.size() || idx >= cached_rows_.size()) return;
+    const bool was_label = all_rows_[idx].mix_label != row.mix_label;
+    all_rows_[idx] = row;
+    CachedRow c = make_cached_row(row);
+    QFontMetrics fm_text(fonts::mono(13, 450));
+    c.win_name_elided = fm_text.elidedText(c.win_name, Qt::ElideRight, qMax(10, column_width(0) - 20));
+    c.time_str_elided = fm_text.elidedText(c.time_str, Qt::ElideRight, qMax(10, column_width(1) - 20));
+    cached_rows_[idx] = std::move(c);
+    if (was_label && pile_filter_ != "all") {
+        update_filtering();  // the row may leave or join the active pile
+    } else {
+        viewport()->update();
+    }
 }
 
 void ScoreTable::set_rows(const std::vector<Row>& rows, bool has_file) {
@@ -77,7 +95,6 @@ void ScoreTable::append_rows(const std::vector<Row>& rows, size_t from, bool has
     }
     const size_t first_new = all_rows_.size();
     all_rows_.insert(all_rows_.end(), rows.begin() + static_cast<std::ptrdiff_t>(from), rows.end());
-    cached_rows_.reserve(all_rows_.size());
     for (size_t i = first_new; i < all_rows_.size(); ++i) cache_row(all_rows_[i]);
     update_elided_cache(first_new);
 
@@ -335,7 +352,8 @@ int ScoreTable::column_width(int col) const {
 
 void ScoreTable::resizeEvent(QResizeEvent* event) {
     QAbstractScrollArea::resizeEvent(event);
-    update_elided_cache();
+    // Columns 0 and 1 (the only elided ones) have fixed widths, so a resize never changes the
+    // cached elisions; re-eliding every row here stalled the window for seconds on large runs.
     update_scroll_bars();
 }
 

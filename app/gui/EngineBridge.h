@@ -97,7 +97,7 @@ private:
     void on_ready_read();
     void on_finished(int exit_code, QProcess::ExitStatus status);
     void handle(const QJsonObject& event);
-    void read_committed_rows();
+    qint64 read_committed_rows();  // returns rows read (at most kMaxRowsPerRead)
     void send(const QByteArray& line);
 
     Options options_;
@@ -112,6 +112,7 @@ private:
     qint64 committed_rows_ = 0;
     QList<QJsonObject> new_rows_;
     quint64 last_seq_ = 0;
+    bool rows_pending_ = false;
 };
 
 }  // namespace whalemix

@@ -278,7 +278,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     p.setPen(theme::kInk);
     QFontMetrics fm_src(src_name_font);
     int src_y = src_eyebrow_y + 14 + 7;
-    QString disp_file = file_name_.isEmpty() ? "blue_a_scores.csv" : file_name_;
+    QString disp_file = file_name_.isEmpty() ? "No source yet" : file_name_;
     p.drawText(QRect(24, src_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, fm_src.elidedText(disp_file, Qt::ElideRight, 192));
 
     // Hint: "<n> sounds · <rows> pictures"
@@ -286,7 +286,7 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     QFont hint_font = fonts::body(14);
     p.setFont(hint_font);
     p.setPen(theme::kSlate);
-    QString hint_text = QString("%1 sounds · %2 pictures").arg(num_sounds_ > 0 ? num_sounds_ : 6).arg(num_pictures_ > 0 ? num_pictures_ : 69);
+    QString hint_text = QString("%1 sounds · %2 pictures").arg(num_sounds_).arg(num_pictures_);
     p.drawText(QRect(24, hint_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, hint_text);
 
     // 5. REASON section

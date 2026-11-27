@@ -148,6 +148,8 @@ Row row_from_engine_json(const QJsonObject& row) {
     r.candidate_id = row.value("event_id").toString().toStdString();
     r.picture_start_s = QString::number(row.value("start_s").toDouble(), 'f', 3).toStdString();
     r.picture_end_s = QString::number(row.value("end_s").toDouble(), 'f', 3).toStdString();
+    r.audio_path = path.toStdString();
+    r.audio_channel = row.value("channel").toInt();
     const QJsonObject scores = row.value("scores").toObject();
     if (scores.value("blue_a").isDouble()) r.bat = QString::number(scores.value("blue_a").toDouble(), 'f', 3).toStdString();
     QString best;
@@ -241,7 +243,10 @@ void EngineBridge::resume() { send("resume\n"); }
 void EngineBridge::cancel() { send("cancel\n"); }
 
 void EngineBridge::on_ready_read() {
+    rows_pending_ = false;
     for (const QJsonObject& ev : parser_.feed(process_->readAllStandardOutput())) handle(ev);
+    // One tail read per stdout chunk, however many results_batch events it carried.
+    if (rows_pending_) read_committed_rows();
 }
 
 void EngineBridge::handle(const QJsonObject& ev) {
@@ -255,7 +260,7 @@ void EngineBridge::handle(const QJsonObject& ev) {
         emit progress(ev.value("files_done").toInt(), ev.value("files_total").toInt(),
                       static_cast<qint64>(ev.value("windows_done").toDouble()));
     } else if (type == "results_batch") {
-        read_committed_rows();
+        rows_pending_ = true;
     } else if (type == "file_error") {
         emit file_failed(ev.value("path").toString(), ev.value("kind").toString(), ev.value("message").toString());
     } else if (type == "model_unavailable") {
@@ -269,9 +274,9 @@ void EngineBridge::handle(const QJsonObject& ev) {
 }
 
 // Rows are durable in results.partial.jsonl before the worker announces them; read only the new tail.
-void EngineBridge::read_committed_rows() {
+qint64 EngineBridge::read_committed_rows() {
     QFile f(QDir(run_dir_).filePath("out/results.partial.jsonl"));
-    if (!f.open(QIODevice::ReadOnly) || !f.seek(partial_offset_)) return;
+    if (!f.open(QIODevice::ReadOnly) || !f.seek(partial_offset_)) return 0;
     qint64 read = 0;
     while (read < kMaxRowsPerRead) {
         const QByteArray line = f.readLine();
@@ -285,11 +290,13 @@ void EngineBridge::read_committed_rows() {
     }
     committed_rows_ += read;
     if (read > 0) emit rows_committed(committed_rows_);
+    return read;
 }
 
 void EngineBridge::on_finished(int exit_code, QProcess::ExitStatus status) {
     on_ready_read();
-    read_committed_rows();
+    while (read_committed_rows() > 0) {
+    }
     QString st = final_status_;
     if (st.isEmpty()) st = status == QProcess::CrashExit ? "crashed" : (exit_code == 3 ? "model_unavailable" : "failed");
     emit run_finished(st, exit_code, results_csv_);

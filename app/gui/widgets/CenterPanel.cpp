@@ -28,7 +28,8 @@ CenterPanel::CenterPanel(QWidget* parent) : QWidget(parent) {
 
     head_layout->addStretch(1);
 
-    auto* meta_label = new QLabel("69 PICTURES FROM 6 SOUNDS", head_widget);
+    meta_label_ = new QLabel("NO SOURCE", head_widget);
+    auto* meta_label = meta_label_;
     meta_label->setFont(fonts::mono(11, 450, 0.1));
     meta_label->setStyleSheet("color: #56658f; padding-bottom: 8px; text-transform: uppercase;");
     head_layout->addWidget(meta_label, 0, Qt::AlignBottom | Qt::AlignRight);
@@ -122,7 +123,14 @@ void CenterPanel::set_rows(const std::vector<Row>& rows, bool has_file, int num_
     pill_review_->set_count(review_count_);
 
     table_->set_rows(rows, has_file);
+    update_meta_label();
     update();
+}
+
+void CenterPanel::update_meta_label() {
+    if (!meta_label_) return;
+    meta_label_->setText(num_rows_ == 0 ? QString("NO SOURCE")
+                                        : QString("%L1 PICTURES FROM %L2 SOUNDS").arg(num_rows_).arg(num_sounds_));
 }
 
 void CenterPanel::append_rows(const std::vector<Row>& rows, size_t from, bool has_file, int num_sounds) {
@@ -143,10 +151,26 @@ void CenterPanel::append_rows(const std::vector<Row>& rows, size_t from, bool ha
     pill_not_call_->set_count(not_call_count_);
     pill_review_->set_count(review_count_);
     table_->append_rows(rows, from, has_file);
+    update_meta_label();
     update();
 }
 
 size_t CenterPanel::shown_rows() const { return table_->row_count(); }
+
+void CenterPanel::update_row(size_t idx, const Row& row, const std::string& old_label) {
+    auto bump = [this](const std::string& label, int d) {
+        if (label == "call") call_count_ += d;
+        else if (label == "not-call") not_call_count_ += d;
+        else if (label == "review") review_count_ += d;
+    };
+    bump(old_label, -1);
+    bump(row.mix_label, +1);
+    pill_call_->set_count(call_count_);
+    pill_not_call_->set_count(not_call_count_);
+    pill_review_->set_count(review_count_);
+    table_->update_row(idx, row);
+    update();
+}
 
 void CenterPanel::focus_search() {
     search_box_->focus_input();

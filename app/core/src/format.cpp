@@ -55,6 +55,13 @@ std::string laya_text(const Row& row) {
 }
 
 std::string why_text(const Row& row) {
+    if (!row.audio_path.empty()) {
+        // Engine row: the label comes from the bundle's calibrated thresholds, not a bat/baf comparison.
+        std::string engine = "The WhaleMix light model scored Blue A at " + (row.bat.empty() ? std::string("n/a") : row.bat) +
+                             "; the model bundle's threshold put this window in " + row.auto_label + " (" + row.auto_reason + ").";
+        if (row.mix_reason == "manual") return engine + " The label was set by hand to " + row.mix_label + ".";
+        return engine;
+    }
     std::string blue = (row.sound_label == "call")
         ? "bat is higher than baf, so Blue A says call."
         : "bat is not higher than baf, so Blue A says not-call.";

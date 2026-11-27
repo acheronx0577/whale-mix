@@ -155,7 +155,12 @@ void DetailPanel::set_row(const Row* row, const QString& csv_folder) {
     playhead_ = 0.0;
     gain_ = 1;
 
-    spectro_view_->set_image_info(QString::fromStdString(row->image_file), csv_folder_);
+    if (row->image_file.empty() && !row->audio_path.empty()) {
+        spectro_view_->set_audio_window(QString::fromStdString(row->audio_path), parse_double(row->picture_start_s),
+                                        parse_double(row->picture_end_s), row->audio_channel);
+    } else {
+        spectro_view_->set_image_info(QString::fromStdString(row->image_file), csv_folder_);
+    }
     spectro_view_->set_playhead(0.0);
     spectro_view_->set_gain(1);
     spectro_view_->show();

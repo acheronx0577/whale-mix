@@ -21,6 +21,10 @@ struct Row {
     // Computed auto labels so manual overrides can be restored
     std::string auto_label;
     std::string auto_reason;
+
+    // Engine rows only: the analysed recording, so the detail panel can draw the window's spectrogram.
+    std::string audio_path;
+    int audio_channel = 0;
 };
 
 } // namespace whalemix
