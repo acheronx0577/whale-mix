@@ -1,7 +1,9 @@
 # GPU Setup (training only)
 
-The desktop app and the Rust engine stay CPU-only. GPU support is for the training host and is
-selected explicitly in the run config:
+The desktop app's default engine build stays CPU-only, which is what CI compiles and tests.
+Optional CUDA inference for that worker is `--features cuda` on `whale-mix-engine` (see
+`app/engine/README.md`). Training GPU support is separate and is selected explicitly in the run
+config:
 
 ```json
 {"training": {"device": "cuda", "precision": "bf16", "cuda_index": 0}}

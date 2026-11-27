@@ -19,6 +19,7 @@ Measured with the light model v1 bundle on a box CPU (8 vCPU, `--threads 2 --bat
 ```text
 whale-mix-engine --inputs <manifest.jsonl> --out <dir> --model-bundle <dir>
                  [--profile <id>]... [--threads N] [--batch N] [--run-id ID]
+                 [--device auto|hybrid|gpu|cuda|cpu]
                  [--check-bundle] [--allow-fixture-bundle]
 ```
 
@@ -26,6 +27,7 @@ whale-mix-engine --inputs <manifest.jsonl> --out <dir> --model-bundle <dir>
 - `--profile`: a required profile id from the bundle, or `auto` (the default) for every required profile.
 - `--threads`: ONNX Runtime intra-op threads, capped at 2. Execution is sequential and inter-op is fixed at 1.
 - `--batch`: windows per inference call (default 8).
+- `--device`: `auto` (default), `hybrid`, `gpu`, `cuda` or `cpu`. The default build has no CUDA provider, so every mode except an explicit `cpu` runs on CPU and the `started` event says so. A `--features cuda` build uses CUDA for `auto`, `hybrid`, `gpu` and `cuda` when a GPU initializes, and falls back to CPU with a reason when it does not.
 - `--allow-fixture-bundle`: accepts an untrained `fixture-untrained` bundle. This is for tests only. The app never passes it.
 
 | Exit | Meaning |
@@ -35,6 +37,33 @@ whale-mix-engine --inputs <manifest.jsonl> --out <dir> --model-bundle <dir>
 | 2 | Invalid arguments or configuration (unknown profile, bad numbers) |
 | 3 | Model bundle missing, invalid, hash mismatch, unqualified, or a refused fixture |
 | 4 | Canceled. Partial output is kept as `results.partial.csv` / `run.partial.json` |
+
+## CUDA
+
+CI builds the default CPU feature set and does not install a CUDA toolkit. On a machine with an NVIDIA GPU:
+
+```bash
+cd app/engine
+cargo build --release --features cuda
+```
+
+That enables `ort`'s `cuda` feature. The build downloads pyke's ONNX Runtime 1.22 `cu12` archive and statically links it (`libonnxruntime.a` on Linux, `onnxruntime.lib` on Windows). It does not compile against the CUDA toolkit. The CUDA provider shared library is copied next to the executable (`libonnxruntime_providers_cuda.so` and `libonnxruntime_providers_shared.so` on Linux; `onnxruntime_providers_cuda.dll` and `onnxruntime_providers_shared.dll` on Windows). At run time that provider still has to load the CUDA 12 and cuDNN 9 shared libraries from `LD_LIBRARY_PATH` (Linux) or `PATH` (Windows).
+
+`ORT_DYLIB_PATH` is not read by this build. `ort` only consults it with the `load-dynamic` feature, and the downloaded `cu12` archive contains no `libonnxruntime.so` / `onnxruntime.dll` (the runtime is the static library). To link a different ONNX Runtime 1.22.x, such as one compiled with CUDA 12.8 and `sm_120` for an RTX 5090, point the build at it:
+
+```bash
+ORT_LIB_LOCATION=/path/to/onnxruntime/lib cargo build --release --features cuda
+```
+
+That directory must contain the 1.22 library and the CUDA provider library. Set `ORT_PREFER_DYNAMIC_LINK=1` when the directory holds a shared library instead of the static archive. A hand-built `load-dynamic` binary is the case that uses `ORT_DYLIB_PATH`: it must be an ONNX Runtime 1.22.x shared library, with the CUDA provider library beside it. This crate does not enable that feature.
+
+| Machine | What the runtime needs |
+|---|---|
+| Linux, Vast.ai GTX 1080 (Pascal, sm_61) | Driver whose `nvidia-smi` CUDA version is 12 or newer, plus CUDA 12 (`libcudart.so.12`, cuBLAS, cuFFT, NVRTC) and cuDNN 9 (`libcudnn.so.9` and the `libcudnn_*.so.9` libraries) on `LD_LIBRARY_PATH`. Pascal is in the standard CUDA 12 builds. A CUDA 11 / cuDNN 8 image will not load this provider. |
+| Linux, Vast.ai RTX 5090 (Blackwell, sm_120) | A driver new enough for CUDA 12.8 (Blackwell) and cuDNN 9 on `LD_LIBRARY_PATH`. The bundled ONNX Runtime 1.22 `cu12` archive may not contain sm_120 kernels. If the session fails with a missing kernel image, rebuild with `ORT_LIB_LOCATION` pointing at an ONNX Runtime 1.22.x library compiled with CUDA 12.8 or newer and architecture 120. `ORT_DYLIB_PATH` does not apply to this feature. |
+| Windows, RTX 3070 (Ampere, sm_86) | Current NVIDIA driver, CUDA 12 toolkit (`cudart64_12.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`, `cufft64_11.dll` on `PATH`, usually `CUDA_PATH\bin`) and cuDNN 9 (`cudnn64_9.dll` plus the `cudnn_*64_9.dll` libraries). cuDNN 8 does not load. |
+
+`--device cpu` never selects CUDA. `--device auto` uses CUDA only when this build has the feature and a GPU is visible (`/dev/nvidia0`, `/dev/nvidiactl` or `/proc/driver/nvidia/gpus` on Linux, `C:\Windows\System32\nvcuda.dll` on Windows) and the provider registers. `CUDA_VISIBLE_DEVICES` empty, `none` or `-1` hides the GPU. The `started` event reports `device_active` of `"cuda"` or `"cpu"` and a `device_note`.
 
 ## Bundle gate
 

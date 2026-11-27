@@ -1,5 +1,5 @@
 //! `whale-mix-engine --inputs <manifest.jsonl> --out <dir> --model-bundle <dir> [--profile <id>]...
-//!                   [--threads N] [--batch N] [--device auto|hybrid|gpu|cpu] [--check-bundle]
+//!                   [--threads N] [--batch N] [--device auto|hybrid|gpu|cuda|cpu] [--check-bundle]
 //!                   [--allow-fixture-bundle]`
 //!
 //! Exit codes: 0 completed and validated, 1 run failed, 2 invalid arguments/configuration,
@@ -59,7 +59,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--device" => {
                 let d = value("--device")?.to_ascii_lowercase();
                 if !engine::DEVICES.contains(&d.as_str()) {
-                    return Err("--device must be auto, hybrid, gpu or cpu".into());
+                    return Err("--device must be auto, hybrid, gpu, cuda or cpu".into());
                 }
                 cfg.device = d;
             }
