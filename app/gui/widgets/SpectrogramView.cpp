@@ -171,7 +171,7 @@ void SpectrogramView::load_image_async(const QString& resolved_path) {
 void SpectrogramView::set_audio_window(const QString& wav_path, double start_s, double end_s, int channel) {
     const QString key = QString("wav:%1|%2|%3|%4").arg(wav_path).arg(start_s, 0, 'f', 3).arg(end_s, 0, 'f', 3).arg(channel);
     image_file_ = key;
-    audio_caption_ = QString("%1 \xc2\xb7 ch%2 \xc2\xb7 %3\xe2\x80\x93%4 s \xc2\xb7 0\xe2\x80\x93250 Hz")
+    audio_caption_ = QString("%1 \xc2\xb7 ch%2 \xc2\xb7 %3\xe2\x80\x93%4 s \xc2\xb7 0\xe2\x80\x93" "250 Hz")
                          .arg(QFileInfo(wav_path).fileName()).arg(channel).arg(start_s, 0, 'f', 1).arg(end_s, 0, 'f', 1);
     csv_folder_.clear();
     resolved_path_ = key;

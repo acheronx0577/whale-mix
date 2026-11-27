@@ -339,7 +339,7 @@ def _session(args: argparse.Namespace, cfg: dict[str, Any], stage: str, parent: 
         raise SetupRequired(f"invalid late-training settings: {exc}") from exc
     lr_at = tail_mod.lr_function(float(training["learning_rate"]), lr_schedule)
     train_ids = sorted(w["example_id"] for w in prep["windows"] if w["split"] == "train" and w["reviewed"])
-    source: DeterministicSampler | ReplayMixer
+    source: DeterministicSampler | ReplayMixer | BalancedSampler
     if stage == "finetune":
         if training.get("imbalance", "none") != "none":
             raise SetupRequired(
