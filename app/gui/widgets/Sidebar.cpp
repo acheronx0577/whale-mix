@@ -463,17 +463,23 @@ void Sidebar::paintEvent(QPaintEvent* /*event*/) {
     QString disp_file = file_name_.isEmpty() ? "No source yet" : file_name_;
     p.drawText(QRect(24, src_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter, fm_src.elidedText(disp_file, Qt::ElideRight, 192));
 
-    // Hint: "2,135 WAV files · 65,000 10s windows" — wraps to two lines in the 192px column.
+    // Two lines so units never wrap: "2,135 WAV files" / "65,000 10s windows".
     int hint_y = src_y + 18 + 6;
     QFont hint_font = fonts::body(14);
     p.setFont(hint_font);
     p.setPen(theme::kSlate);
-    const QString hint_text = source_hint_text();
-    const QRect hint_bound = p.boundingRect(QRect(24, hint_y, 192, 80), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, hint_text);
-    p.drawText(hint_bound, Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, hint_text);
+    const QString wav_line = display::wav_files(num_sounds_);
+    const QString win_line = unified_
+        ? display::windows_10s(num_pictures_)
+        : (display::thousands(num_pictures_) + (num_pictures_ == 1 ? " picture" : " pictures"));
+    QFontMetrics fm_hint(hint_font);
+    p.drawText(QRect(24, hint_y, 192, 18), Qt::AlignLeft | Qt::AlignVCenter,
+               fm_hint.elidedText(wav_line, Qt::ElideRight, 192));
+    p.drawText(QRect(24, hint_y + 18, 192, 18), Qt::AlignLeft | Qt::AlignVCenter,
+               fm_hint.elidedText(win_line, Qt::ElideRight, 192));
 
     // 7. What the labels mean
-    int reason_eyebrow_y = hint_bound.bottom() + 20;
+    int reason_eyebrow_y = hint_y + 36 + 20;
     if (unified_) {
         Eyebrow::paint(&p, QRect(24, reason_eyebrow_y, 192, 14), "WHAT IT DETECTS");
         int y = reason_eyebrow_y + 14 + 10;

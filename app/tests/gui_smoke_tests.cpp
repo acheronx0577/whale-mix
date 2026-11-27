@@ -474,15 +474,13 @@ TEST(GuiRedesignTest, WavFilesAndTenSecondWindowsLabels) {
               192);
     EXPECT_LE(QFontMetrics(whalemix::fonts::mono(11, 450, 0.1)).horizontalAdvance("PILES (10S WINDOWS)"), 192);
 
-    // The finished 10k SOURCE hint wraps to two lines in 192px and does not elide any characters.
+    // Each SOURCE count line fits the 192px column, so "10s windows" is never orphaned.
     {
         QFontMetrics fm(whalemix::fonts::body(14));
-        const QString hint = source_counts(10000, 335450, true);
-        const QRect bound = fm.boundingRect(QRect(0, 0, 192, 80), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, hint);
-        EXPECT_LE(bound.width(), 192);
-        EXPECT_GE(bound.height(), fm.lineSpacing());
-        EXPECT_LE(bound.height(), fm.lineSpacing() * 2 + 8);
-        EXPECT_FALSE(fm.elidedText(hint, Qt::ElideRight, 192 * 2).endsWith(QChar(0x2026)));
+        EXPECT_LE(fm.horizontalAdvance("10,000 WAV files"), 192);
+        EXPECT_LE(fm.horizontalAdvance("335,450 10s windows"), 192);
+        EXPECT_EQ(fm.elidedText("10,000 WAV files", Qt::ElideRight, 192), "10,000 WAV files");
+        EXPECT_EQ(fm.elidedText("335,450 10s windows", Qt::ElideRight, 192), "335,450 10s windows");
     }
 
     whalemix::MainWindow window;
