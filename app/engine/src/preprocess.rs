@@ -430,7 +430,11 @@ impl ChannelPipeline {
             start_s,
             end_s: start_s + self.spec.window_span_s(),
             tensor,
-            audio_rms: if samples > 0.0 { (sumsq / samples).sqrt() } else { 0.0 },
+            audio_rms: if samples > 0.0 {
+                (sumsq / samples).sqrt()
+            } else {
+                0.0
+            },
             band_10_110,
             band_all,
         }

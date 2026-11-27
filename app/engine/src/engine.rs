@@ -46,7 +46,10 @@ pub const DEVICES: [&str; 4] = ["auto", "hybrid", "gpu", "cpu"];
 pub fn resolve_device(requested: &str) -> (&'static str, &'static str) {
     match requested {
         "cpu" => ("cpu", "CPU requested"),
-        _ => ("cpu", "no GPU execution provider in this build; running on CPU"),
+        _ => (
+            "cpu",
+            "no GPU execution provider in this build; running on CPU",
+        ),
     }
 }
 
