@@ -8,15 +8,15 @@ It is not an official MBARI project or endorsement.
 
 [Live site](https://blue-whale-call-detection-under-oce.vercel.app) · [Source](https://github.com/acheronx0577/whale-mix) · [Desktop App](https://blue-whale-call-detection-under-oce.vercel.app/desktop)
 
-<img src="docs/readme/badge-live.svg" alt="Live: Whale Mix site"> <img src="docs/readme/badge-release.svg" alt="Release: v0.2.0"> <img src="docs/readme/badge-desktop.svg" alt="Desktop: C++20 / Qt 6"> <img src="docs/readme/badge-next.svg" alt="Site: Next.js 16">
+<img src="docs/readme/badge-live.svg" alt="Live: Whale Mix site"> <img src="docs/readme/badge-release.svg" alt="Release: v0.3.0"> <img src="docs/readme/badge-desktop.svg" alt="Desktop: C++20 / Qt 6"> <img src="docs/readme/badge-next.svg" alt="Site: Next.js 16">
 
 ## What's new
 
 The README on `main` still opens as a lab note: the question, the mix rule, the Python commands, and the 2026-10-13 score record. Since then the project has shipped a public site and a packaged desktop app, all present on `main`:
 
 - **Site.** A Next.js 16 marketing site at [blue-whale-call-detection-under-oce.vercel.app](https://blue-whale-call-detection-under-oce.vercel.app), with an interactive Whale Mix window on Home, pages for How it Works, About the Project, Data & Credits, Notes, and Get the Code, and a right-edge badge that links to this repository.
-- **Desktop App page.** [`/desktop`](https://blue-whale-call-detection-under-oce.vercel.app/desktop) lists the v0.2.0 packages, first-launch steps, and a live demo of the window.
-- **C++ desktop app, v0.2.0.** Whale Mix is a C++20 / Qt 6 app: a Windows installer, a portable zip, a universal macOS disk image, and standalone `whale-mix.exe` and `whale-mix-cli.exe` builds. The builds are unsigned. A row that already contains `laya_choice` and `laya_probability` uses the mix rule; a row without those columns keeps Blue A's label.
+- **Desktop App page.** [`/desktop`](https://blue-whale-call-detection-under-oce.vercel.app/desktop) lists the v0.3.0 packages, first-launch steps, and a live demo of the window.
+- **C++ desktop app, v0.3.0.** Whale Mix is a C++20 / Qt 6 app: a Windows installer, a portable zip, a universal macOS disk image, and standalone `whale-mix.exe` and `whale-mix-cli.exe` builds. The builds are unsigned. A row that already contains `laya_choice` and `laya_probability` uses the mix rule; a row without those columns keeps Blue A's label.
 - **Headless CLI.** `whale-mix-cli --scores path/to/candidate-scores.csv --out out/mix` writes the same export without a window.
 
 ## Method
@@ -73,10 +73,10 @@ flowchart LR
   <img src="docs/readme/demo.jpg" alt="Figure 2. Interactive Whale Mix window on the home page" width="1012">
 </p>
 
-**Figure 3.** Desktop App at `/desktop`. The three v0.2.0 packages: Windows installer, universal macOS disk image, and Windows portable zip. Builds are unsigned.
+**Figure 3.** Desktop App at `/desktop`. The three v0.3.0 packages: Windows installer, universal macOS disk image, and Windows portable zip. Builds are unsigned.
 
 <p align="center">
-  <img src="docs/readme/desktop.jpg" alt="Figure 3. Desktop App downloads for Whale Mix 0.2.0" width="1012">
+  <img src="docs/readme/desktop.jpg" alt="Figure 3. Desktop App downloads for Whale Mix 0.3.0" width="1012">
 </p>
 
 **Figure 4.** How it Works. The recorded counts from the first six clips: 69 pictures, one scored higher for call, none reached 0.7.
@@ -93,17 +93,17 @@ flowchart LR
 
 ## Downloads
 
-Whale Mix 0.2.0, published on the [v0.2.0 GitHub Release](https://github.com/acheronx0577/whale-mix/releases/tag/v0.2.0). The builds are unsigned. The Windows installer does not need admin rights. On first launch, Windows SmartScreen or macOS Gatekeeper will ask once; the Desktop App page has the steps. The app opens at 1440 × 900, with a minimum size of 1200 × 760. macOS builds target macOS 12 or later and are universal (Apple Silicon and Intel).
+Whale Mix 0.3.0, published on the [v0.3.0 GitHub Release](https://github.com/acheronx0577/whale-mix/releases/tag/v0.3.0). The builds are unsigned. The Windows installer does not need admin rights. On first launch, Windows SmartScreen or macOS Gatekeeper will ask once; the Desktop App page has the steps. The app opens at 1440 × 900, with a minimum size of 1200 × 760. macOS builds target macOS 12 or later and are universal (Apple Silicon and Intel).
 
 Sizes below are the published asset sizes on that release, rounded from the asset byte counts in decimal units (1 MB = 1,000,000 bytes, 1 KB = 1,000 bytes).
 
 | Package | File | Size | Notes |
 |---|---|---|---|
-| Windows installer | [WhaleMix-0.2.0-windows-x64-setup.exe](https://github.com/acheronx0577/whale-mix/releases/download/v0.2.0/WhaleMix-0.2.0-windows-x64-setup.exe) | 46.5 MB | Inno Setup, x64 |
-| Windows portable zip | [WhaleMix-0.2.0-windows-x64.zip](https://github.com/acheronx0577/whale-mix/releases/download/v0.2.0/WhaleMix-0.2.0-windows-x64.zip) | 55.5 MB | Unzip and run `whale-mix.exe`. Qt DLLs and the CLI are in the folder. |
-| macOS disk image | [WhaleMix-0.2.0-macos.dmg](https://github.com/acheronx0577/whale-mix/releases/download/v0.2.0/WhaleMix-0.2.0-macos.dmg) | 25.4 MB | Universal. Drag to Applications, then right-click and Open the first time. |
-| Windows GUI exe | [whale-mix.exe](https://github.com/acheronx0577/whale-mix/releases/download/v0.2.0/whale-mix.exe) | 1.8 MB | The desktop app binary alone, as extracted from the zip. Needs the Qt DLLs beside it. |
-| Windows CLI exe | [whale-mix-cli.exe](https://github.com/acheronx0577/whale-mix/releases/download/v0.2.0/whale-mix-cli.exe) | 135 KB | Headless export. No window. |
+| Windows installer | [WhaleMix-0.3.0-windows-x64-setup.exe](https://github.com/acheronx0577/whale-mix/releases/download/v0.3.0/WhaleMix-0.3.0-windows-x64-setup.exe) | see release | Inno Setup, x64 |
+| Windows portable zip | [WhaleMix-0.3.0-windows-x64.zip](https://github.com/acheronx0577/whale-mix/releases/download/v0.3.0/WhaleMix-0.3.0-windows-x64.zip) | see release | Unzip and run `whale-mix.exe`. Qt DLLs and the CLI are in the folder. |
+| macOS disk image | [WhaleMix-0.3.0-macos.dmg](https://github.com/acheronx0577/whale-mix/releases/download/v0.3.0/WhaleMix-0.3.0-macos.dmg) | see release | Universal. Drag to Applications, then right-click and Open the first time. |
+| Windows GUI exe | [whale-mix.exe](https://github.com/acheronx0577/whale-mix/releases/download/v0.3.0/whale-mix.exe) | see release | The desktop app binary alone, as extracted from the zip. Needs the Qt DLLs beside it. |
+| Windows CLI exe | [whale-mix-cli.exe](https://github.com/acheronx0577/whale-mix/releases/download/v0.3.0/whale-mix-cli.exe) | see release | Headless export. No window. |
 
 The live download page is [`/desktop`](https://blue-whale-call-detection-under-oce.vercel.app/desktop).
 
@@ -149,7 +149,7 @@ git clone https://github.com/acheronx0577/whale-mix.git
 cd Blue-Whale-Call-Detection-Under-Ocean-Noise
 ```
 
-To run the packaged app, download a v0.2.0 build from the table above, or from [`/desktop`](https://blue-whale-call-detection-under-oce.vercel.app/desktop).
+To run the packaged app, download a v0.3.0 build from the table above, or from [`/desktop`](https://blue-whale-call-detection-under-oce.vercel.app/desktop).
 
 The Python mix, from the repo root, scores, sorts, and exports in one command. Blue A weights and Laya weights stay outside this repository, so `sort` and `run` need a local Laya checkpoint.
 

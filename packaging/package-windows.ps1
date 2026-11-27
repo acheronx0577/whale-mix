@@ -1,7 +1,7 @@
 param(
     [string]$BuildDir = "build/windows-msvc",
     [string]$DistDir = "dist/WhaleMix",
-    [string]$Version = "0.2.0"
+    [string]$Version = "0.3.0"
 )
 
 $ErrorActionPreference = "Stop"

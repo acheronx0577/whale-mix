@@ -3,7 +3,7 @@ set -euo pipefail
 
 BUILD_DIR="${1:-build/macos}"
 DIST_DIR="${2:-dist}"
-VERSION="${3:-0.2.0}"
+VERSION="${3:-0.3.0}"
 
 mkdir -p "$DIST_DIR"
 

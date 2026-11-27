@@ -63,14 +63,14 @@ jobs:
           if (Test-Path dist/WhaleMix/include) { Remove-Item -Recurse -Force dist/WhaleMix/include }
           if (Test-Path dist/WhaleMix/lib) { Remove-Item -Recurse -Force dist/WhaleMix/lib }
           if (-not (Test-Path dist/WhaleMix/samples)) { Copy-Item -Recurse -Force samples dist/WhaleMix/samples }
-          Compress-Archive -Path dist/WhaleMix -DestinationPath dist/WhaleMix-0.2.0-windows-x64.zip
-          iscc /DAppVersion=0.2.0 packaging/whale-mix.iss
+          Compress-Archive -Path dist/WhaleMix -DestinationPath dist/WhaleMix-0.3.0-windows-x64.zip
+          iscc /DAppVersion=0.3.0 packaging/whale-mix.iss
 
       - name: Upload Windows Zip
         uses: actions/upload-artifact@v4
         with:
           name: whale-mix-windows-zip
-          path: dist/WhaleMix-0.2.0-windows-x64.zip
+          path: dist/WhaleMix-0.3.0-windows-x64.zip
           retention-days: 7
           if-no-files-found: error
 
@@ -78,7 +78,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: whale-mix-windows-setup
-          path: dist/WhaleMix-0.2.0-windows-x64-setup.exe
+          path: dist/WhaleMix-0.3.0-windows-x64-setup.exe
           retention-days: 7
           if-no-files-found: error
 
@@ -144,13 +144,13 @@ jobs:
       - name: Package DMG
         run: |
           chmod +x packaging/package-mac.sh
-          ./packaging/package-mac.sh build/macos dist 0.2.0
+          ./packaging/package-mac.sh build/macos dist 0.3.0
 
       - name: Upload macOS DMG
         uses: actions/upload-artifact@v4
         with:
           name: whale-mix-macos-dmg
-          path: dist/WhaleMix-0.2.0-macos.dmg
+          path: dist/WhaleMix-0.3.0-macos.dmg
           retention-days: 7
           if-no-files-found: error
 
@@ -355,7 +355,7 @@ jobs:
       - name: Verify All 3 Packages Exist and Non-Empty
         run: |
           ls -la dist/
-          test -s dist/WhaleMix-0.2.0-windows-x64.zip
-          test -s dist/WhaleMix-0.2.0-windows-x64-setup.exe
-          test -s dist/WhaleMix-0.2.0-macos.dmg
+          test -s dist/WhaleMix-0.3.0-windows-x64.zip
+          test -s dist/WhaleMix-0.3.0-windows-x64-setup.exe
+          test -s dist/WhaleMix-0.3.0-macos.dmg
           echo "All three required packages verified!"
