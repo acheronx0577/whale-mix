@@ -19,6 +19,15 @@ serde_json = "1"
 sha2 = "0.10"
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "download-binaries", "copy-dylibs"] }
 
+[features]
+# Optional NVIDIA CUDA execution provider. Off by default, so Linux, macOS and Windows CI
+# stay CPU-only and do not need a CUDA toolkit. Enabling it turns on ort's `cuda` API.
+# ort then downloads its ONNX Runtime 1.22 CUDA 12 archive and statically links
+# `libonnxruntime.a` / `onnxruntime.lib`. The provider shared library is copied next to
+# the executable and, at run time, still needs the CUDA 12 and cuDNN 9 libraries.
+# `load-dynamic` / `ORT_DYLIB_PATH` are not used: that package has no `libonnxruntime.so`.
+cuda = ["ort/cuda"]
+
 [dev-dependencies]
 tempfile = "3"
 

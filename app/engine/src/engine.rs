@@ -1,5 +1,6 @@
-//! One analysis run: lazy model load, a bounded decode/preprocess producer, a single ONNX Runtime CPU
-//! session on the calling thread, durable incremental results and atomic final artifacts.
+//! One analysis run: model load, a bounded decode/preprocess producer, one ONNX Runtime session on
+//! the calling thread, durable incremental results and atomic final artifacts. The default build
+//! uses the CPU execution provider. `--features cuda` uses CUDA when a GPU is available.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -33,24 +34,189 @@ pub struct RunConfig {
     pub threads: usize,
     pub batch: usize,
     pub allow_fixture: bool,
-    /// Requested compute mode: "auto", "hybrid", "gpu" or "cpu".
+    /// Requested compute mode: "auto", "hybrid", "gpu", "cuda" or "cpu".
     pub device: String,
     pub run_id: String,
 }
 
 /// Accepted `--device` values.
-pub const DEVICES: [&str; 4] = ["auto", "hybrid", "gpu", "cpu"];
+pub const DEVICES: [&str; 5] = ["auto", "hybrid", "gpu", "cuda", "cpu"];
 
-/// The backend that actually runs the model, and why. This build links ONNX Runtime with only the
-/// CPU execution provider, so every mode resolves to CPU and says so; GPU providers are future work.
-pub fn resolve_device(requested: &str) -> (&'static str, &'static str) {
-    match requested {
-        "cpu" => ("cpu", "CPU requested"),
-        _ => (
-            "cpu",
-            "no GPU execution provider in this build; running on CPU",
-        ),
+/// The backend that will run the model, and why.
+///
+/// `cpu` always stays on CPU. `auto`, `hybrid`, `gpu` and `cuda` use the CUDA execution provider
+/// when this binary is built with `--features cuda` and a CUDA GPU can be initialized. Otherwise
+/// they stay on CPU and the note says why. The default build has no CUDA provider, so every
+/// non-CPU request falls back without touching ONNX Runtime's CUDA API.
+pub fn resolve_device(requested: &str) -> (&'static str, String) {
+    if requested == "cpu" {
+        return ("cpu", "CPU requested".to_string());
     }
+    match cuda_plan(requested) {
+        None => (
+            "cuda",
+            match requested {
+                "cuda" => "CUDA execution provider selected".to_string(),
+                "gpu" => "GPU requested; CUDA execution provider selected".to_string(),
+                "hybrid" => "hybrid requested; CUDA execution provider selected".to_string(),
+                _ => "auto selected the CUDA execution provider".to_string(),
+            },
+        ),
+        Some(note) => ("cpu", note),
+    }
+}
+
+/// `None` selects CUDA. `Some` is the reason the run stays on CPU.
+fn cuda_plan(requested: &str) -> Option<String> {
+    #[cfg(not(feature = "cuda"))]
+    {
+        let _ = requested;
+        Some("no GPU execution provider in this build; running on CPU".to_string())
+    }
+    #[cfg(feature = "cuda")]
+    {
+        match probe_cuda(requested) {
+            Ok(()) => None,
+            Err(reason) => Some(format!("{reason}; running on CPU")),
+        }
+    }
+}
+
+/// A CUDA GPU the driver is exposing. `CUDA_VISIBLE_DEVICES` empty, `none` or `-1` hides it.
+#[cfg(feature = "cuda")]
+fn nvidia_gpu_visible() -> bool {
+    if let Ok(visible) = std::env::var("CUDA_VISIBLE_DEVICES") {
+        let visible = visible.trim();
+        if visible.is_empty() || visible == "-1" || visible.eq_ignore_ascii_case("none") {
+            return false;
+        }
+    }
+    nvidia_device_node_present()
+}
+
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+fn nvidia_device_node_present() -> bool {
+    if Path::new("/dev/nvidia0").exists() || Path::new("/dev/nvidiactl").exists() {
+        return true;
+    }
+    fs::read_dir("/proc/driver/nvidia/gpus")
+        .ok()
+        .and_then(|entries| entries.flatten().next())
+        .is_some()
+}
+
+#[cfg(all(feature = "cuda", target_os = "windows"))]
+fn nvidia_device_node_present() -> bool {
+    Path::new(r"C:\Windows\System32\nvcuda.dll").exists()
+}
+
+#[cfg(all(feature = "cuda", not(any(target_os = "linux", target_os = "windows"))))]
+fn nvidia_device_node_present() -> bool {
+    false
+}
+
+#[cfg(feature = "cuda")]
+fn probe_cuda(requested: &str) -> Result<(), String> {
+    use ort::execution_providers::ExecutionProvider;
+
+    let ep = ort::execution_providers::CUDAExecutionProvider::default();
+    if !ep.supported_by_platform() {
+        return Err("CUDA execution provider is not supported on this platform".into());
+    }
+    // `auto` and `hybrid` stay on CPU when no device node is visible, without loading the
+    // provider. An explicit `cuda` or `gpu` request still tries, so a missed device node can
+    // succeed and a real initialization failure is reported.
+    if !nvidia_gpu_visible() && !matches!(requested, "cuda" | "gpu") {
+        return Err("no CUDA GPU is visible".into());
+    }
+    match ep.is_available() {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(
+                "CUDA execution provider is not available in this ONNX Runtime build (need the CUDA 12 and cuDNN 9 runtimes on the loader path; a custom 1.22.x library is selected at build time with ORT_LIB_LOCATION)"
+                    .into(),
+            );
+        }
+        Err(error) => return Err(format!("CUDA execution provider check failed: {error}")),
+    }
+    let builder = ort::session::Session::builder().map_err(|error| error.to_string())?;
+    builder
+        .with_execution_providers([ort::execution_providers::CUDAExecutionProvider::default()
+            .with_device_id(0)
+            .build()
+            .error_on_failure()])
+        .map(|_| ())
+        .map_err(|error| format!("CUDA execution provider failed to register: {error}"))
+}
+
+struct OpenedSession {
+    session: ort::session::Session,
+    on_cuda: bool,
+    fallback_note: Option<String>,
+}
+
+fn configure_session(threads: usize) -> Result<ort::session::builder::SessionBuilder, RunError> {
+    ort::session::Session::builder()
+        .and_then(|builder| builder.with_intra_threads(threads))
+        .and_then(|builder| builder.with_inter_threads(1))
+        .and_then(|builder| builder.with_parallel_execution(false))
+        .map_err(|error| RunError::Model(error.to_string()))
+}
+
+fn open_session(model: &Path, threads: usize, use_cuda: bool) -> Result<OpenedSession, RunError> {
+    let open_cpu = || -> Result<ort::session::Session, RunError> {
+        configure_session(threads)?
+            .commit_from_file(model)
+            .map_err(|error| RunError::Model(error.to_string()))
+    };
+    if use_cuda {
+        #[cfg(feature = "cuda")]
+        {
+            let cuda = configure_session(threads).and_then(|builder| {
+                builder
+                    .with_execution_providers([
+                        ort::execution_providers::CUDAExecutionProvider::default()
+                            .with_device_id(0)
+                            .build()
+                            .error_on_failure(),
+                    ])
+                    .and_then(|builder| builder.commit_from_file(model))
+                    .map_err(|error| RunError::Model(error.to_string()))
+            });
+            return match cuda {
+                Ok(session) => Ok(OpenedSession {
+                    session,
+                    on_cuda: true,
+                    fallback_note: None,
+                }),
+                Err(error) => match open_cpu() {
+                    Ok(session) => Ok(OpenedSession {
+                        session,
+                        on_cuda: false,
+                        fallback_note: Some(format!("{error}; running on CPU")),
+                    }),
+                    Err(cpu_error) => Err(RunError::Model(format!(
+                        "{error}; CPU fallback also failed: {cpu_error}"
+                    ))),
+                },
+            };
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            return Ok(OpenedSession {
+                session: open_cpu()?,
+                on_cuda: false,
+                fallback_note: Some(
+                    "no GPU execution provider in this build; running on CPU".to_string(),
+                ),
+            });
+        }
+    }
+    Ok(OpenedSession {
+        session: open_cpu()?,
+        on_cuda: false,
+        fallback_note: None,
+    })
 }
 
 #[derive(Default)]
@@ -396,7 +562,23 @@ pub fn run(
     let mut files_log = BufWriter::new(File::create(&files_path).map_err(io_err)?);
     let m = &bundle.manifest;
     let fixture = m.artifact_kind == "fixture-untrained";
-    let (device_active, device_note) = resolve_device(&cfg.device);
+    let (mut device_active, mut device_note) = resolve_device(&cfg.device);
+    // Open a CUDA session before `started` so the reported device is the one that will run.
+    // CPU sessions stay lazy and are created on the first batch, as before.
+    let mut session: Option<ort::session::Session> = None;
+    let mut model_load_ms: Option<f64> = None;
+    if device_active == "cuda" {
+        let load_started = Instant::now();
+        let opened = open_session(&bundle.model_path, threads, true)?;
+        model_load_ms = Some(load_started.elapsed().as_secs_f64() * 1000.0);
+        if !opened.on_cuda {
+            if let Some(note) = opened.fallback_note {
+                device_active = "cpu";
+                device_note = note;
+            }
+        }
+        session = Some(opened.session);
+    }
     emitter.emit("started", json!({
         "engine_version": ENGINE_VERSION, "model_sha256": m.model.sha256, "artifact_kind": m.artifact_kind,
         "fixture": fixture, "threads": threads, "batch": cfg.batch, "files_total": total_files,
@@ -426,8 +608,6 @@ pub fn run(
     let producer_control = Arc::clone(&control);
     let handle = thread::spawn(move || producer(producer_cfg, spec, producer_control, tx));
 
-    let mut session: Option<ort::session::Session> = None;
-    let mut model_load_ms: Option<f64> = None;
     let mut files: BTreeMap<usize, FileState> = BTreeMap::new();
     let (mut rows_total, mut windows_done, mut files_done, mut files_failed) =
         (0u64, 0u64, 0u64, 0u64);
@@ -470,15 +650,10 @@ pub fn run(
             } => {
                 control.wait_while_paused();
                 if session.is_none() {
-                    let t = Instant::now();
-                    let s = ort::session::Session::builder()
-                        .and_then(|b| b.with_intra_threads(threads))
-                        .and_then(|b| b.with_inter_threads(1))
-                        .and_then(|b| b.with_parallel_execution(false))
-                        .and_then(|b| b.commit_from_file(&bundle.model_path))
-                        .map_err(|e| RunError::Model(e.to_string()))?;
-                    model_load_ms = Some(t.elapsed().as_secs_f64() * 1000.0);
-                    session = Some(s);
+                    let load_started = Instant::now();
+                    let opened = open_session(&bundle.model_path, threads, false)?;
+                    model_load_ms = Some(load_started.elapsed().as_secs_f64() * 1000.0);
+                    session = Some(opened.session);
                 }
                 let sess = session.as_mut().expect("session");
                 let n = windows.len();
@@ -759,4 +934,58 @@ pub fn validate_outputs(csv_path: &Path, expected_rows: u64) -> Result<(), RunEr
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_device;
+
+    #[test]
+    fn cpu_request_stays_on_cpu() {
+        let (active, note) = resolve_device("cpu");
+        assert_eq!(active, "cpu");
+        assert_eq!(note, "CPU requested");
+    }
+
+    #[test]
+    #[cfg(not(feature = "cuda"))]
+    fn gpu_requests_without_cuda_feature_fall_back() {
+        for requested in ["auto", "hybrid", "gpu", "cuda"] {
+            let (active, note) = resolve_device(requested);
+            assert_eq!(active, "cpu", "{requested}");
+            assert_eq!(
+                note, "no GPU execution provider in this build; running on CPU",
+                "{requested}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn auto_without_a_visible_gpu_falls_back() {
+        let (active, note) = resolve_device("auto");
+        if active == "cuda" {
+            assert!(note.to_ascii_lowercase().contains("cuda"));
+            return;
+        }
+        assert_eq!(active, "cpu");
+        assert!(
+            note.contains("running on CPU"),
+            "fallback note should say why: {note}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn explicit_cuda_reports_cuda_or_a_cpu_reason() {
+        let (active, note) = resolve_device("cuda");
+        match active {
+            "cuda" => assert!(note.to_ascii_lowercase().contains("cuda")),
+            "cpu" => assert!(
+                note.contains("running on CPU"),
+                "fallback note should say why: {note}"
+            ),
+            other => panic!("unexpected device {other}"),
+        }
+    }
 }
