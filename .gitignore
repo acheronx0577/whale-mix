@@ -6,3 +6,19 @@ build/
 dist/
 *.zip
 .vercel
+# Model weights, bundles, checkpoints, raw audio and secrets stay out of Git.
+# Trained bundles ship as GitHub Release assets, never as tracked files.
+*.onnx
+*.onnx.data
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+bundles/
+models/
+bundle-light-*/
+*.wav
+*.flac
+!samples/audio/*.wav
+.env
+.env.*
