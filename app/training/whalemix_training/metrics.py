@@ -9,17 +9,28 @@ Matching rule (v1, set before any comparison):
 - Matching is one-to-one and greedy in descending score order (ties by start time), so overlapping
   windows cannot count one real call twice. Unmatched predictions are false alarms; unmatched truth
   events are misses.
+
+Average precision (ap-sweep-v2): the area under an interpolated precision-recall curve built by sweeping
+the score threshold. At every swept threshold the predictions at or above it are merged and matched with
+exactly the rule above (the same code path as the operating point), and false alarms are counted on the
+same basis as the operating point (inside reviewed time when the eval set has reviewed intervals).
+Earlier reports ranked all unthresholded predictions after one merge; dense overlapping windows then
+chain-merged into one event per recording, so that AP collapsed towards 1/N and is not comparable.
 """
 
 from __future__ import annotations
 
+import bisect
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 MATCH_RULE_VERSION = "event-match-v1"
+AP_METHOD = "ap-sweep-v2"
+AP_MAX_THRESHOLDS = 1024
 
 
 @dataclass(frozen=True)
@@ -105,6 +116,107 @@ def average_precision(outcomes: list[dict[str, Any]], n_truth: int) -> float | N
     return total / n_truth
 
 
+def _match_track(
+    truth: list[dict[str, Any]], preds: list[dict[str, Any]], rule: MatchRule
+) -> list[tuple[dict[str, Any], bool]]:
+    """`match` for predictions and truth of a single recording/channel/label, returning per merged event
+    whether it matched. Candidate truth events are narrowed with a sorted index but visited in their
+    original order, so the greedy choice is identical to `match`."""
+    merged = merge_predictions(preds, rule.merge_gap_s)
+    ordered = sorted(merged, key=lambda p: (-p["score"], p["start_s"], str(p["recording_id"])))
+    order = sorted(range(len(truth)), key=lambda i: truth[i]["start_s"])
+    starts = [truth[i]["start_s"] for i in order]
+    longest = max((t["end_s"] - t["start_s"] for t in truth), default=0.0)
+    reach = rule.center_tolerance_s + max(0.0, longest) + 1e-6
+    used: set[int] = set()
+    matched: list[tuple[dict[str, Any], bool]] = []
+    for p in ordered:
+        lo = bisect.bisect_left(starts, p["start_s"] - reach)
+        hi = bisect.bisect_right(starts, p["end_s"] + rule.center_tolerance_s + 1e-6)
+        best, best_q = None, None
+        for i in sorted(order[lo:hi]):
+            if i in used:
+                continue
+            q = _compatible(p, truth[i], rule)
+            if q is not None and (best_q is None or q > best_q):
+                best, best_q = i, q
+        if best is not None:
+            used.add(best)
+        matched.append((p, best is not None))
+    return matched
+
+
+def _sweep_thresholds(scores: list[float], max_thresholds: int) -> list[float]:
+    unique = sorted(set(scores), reverse=True)
+    if len(unique) <= max_thresholds:
+        return unique
+    picks = np.linspace(0, len(unique) - 1, max_thresholds).round().astype(int)
+    return [unique[i] for i in sorted(set(picks.tolist()))]
+
+
+def precision_recall_sweep(
+    truth: list[dict[str, Any]],
+    preds: list[dict[str, Any]],
+    rule: MatchRule,
+    counts_as_false_alarm: Callable[[dict[str, Any]], bool] | None = None,
+    max_thresholds: int = AP_MAX_THRESHOLDS,
+) -> list[dict[str, Any]]:
+    """Operating points for descending score thresholds (all distinct scores, or `max_thresholds` of them
+    evenly spaced in rank). Each point merges and matches the predictions at or above its threshold with
+    the operating-point rule; tracks are independent under that rule, so only tracks that gained a
+    prediction are re-matched."""
+    truth_by: dict[tuple[str, int, str], list[dict[str, Any]]] = defaultdict(list)
+    for t in truth:
+        truth_by[_key(t)].append(t)
+    preds_by: dict[tuple[str, int, str], list[dict[str, Any]]] = defaultdict(list)
+    for p in preds:
+        preds_by[_key(p)].append(p)
+    by_score = {k: sorted(v, key=lambda p: -p["score"]) for k, v in preds_by.items()}
+    by_start = {k: sorted(v, key=lambda p: (p["start_s"], p["end_s"])) for k, v in preds_by.items()}
+    cursor = dict.fromkeys(by_score, 0)
+    counts: dict[tuple[str, int, str], tuple[int, int]] = {}
+    is_fa = counts_as_false_alarm or (lambda _p: True)
+    points: list[dict[str, Any]] = []
+    for threshold in _sweep_thresholds([p["score"] for p in preds], max_thresholds):
+        for key, ranked in by_score.items():
+            n = cursor[key]
+            while n < len(ranked) and ranked[n]["score"] >= threshold:
+                n += 1
+            if n == cursor[key]:
+                continue
+            cursor[key] = n
+            active = [p for p in by_start[key] if p["score"] >= threshold]
+            outcome = _match_track(truth_by.get(key, []), active, rule)
+            tp = sum(1 for _p, hit in outcome if hit)
+            fp = sum(1 for p, hit in outcome if not hit and is_fa(p))
+            counts[key] = (tp, fp)
+        tp = sum(c[0] for c in counts.values())
+        fp = sum(c[1] for c in counts.values())
+        points.append({"threshold": threshold, "tp": tp, "fp": fp})
+    return points
+
+
+def sweep_average_precision(points: list[dict[str, Any]], n_truth: int) -> float | None:
+    """Area under the precision-recall curve with interpolated precision (the best precision at any
+    recall at least as high), integrated over recall. Merging can lower recall as the threshold drops,
+    so the curve is not assumed monotone."""
+    if n_truth == 0:
+        return None
+    curve = sorted(
+        ((pt["tp"] / n_truth, pt["tp"] / (pt["tp"] + pt["fp"])) for pt in points if pt["tp"] + pt["fp"] > 0),
+        reverse=True,
+    )
+    area, best, prev_recall = 0.0, 0.0, None
+    for recall, precision in curve:
+        if prev_recall is not None:
+            area += (prev_recall - recall) * best
+        best = max(best, precision)
+        prev_recall = recall
+    if prev_recall is not None:
+        area += prev_recall * best
+    return area
+
+
 def _in_ranges(p: dict[str, Any], ranges: list[dict[str, Any]]) -> bool:
     centre = (p["start_s"] + p["end_s"]) / 2
     return any(
@@ -170,8 +282,6 @@ def label_metrics(
     report carries no reviewed background exposure."""
     t = [e for e in truth if e["label"] == label]
     p_all = [e for e in preds if e["label"] == label]
-    ranked = match(t, p_all, rule)
-    ap = average_precision(ranked["outcomes"], len(t))
     result = match(t, [e for e in p_all if e["score"] >= threshold], rule)
     tp = sum(1 for o in result["outcomes"] if o["truth_index"] is not None)
     fp_events = [o["prediction"] for o in result["outcomes"] if o["truth_index"] is None]
@@ -187,6 +297,8 @@ def label_metrics(
             "reviewed_background_hours": background,
             "unreviewed_detections": unreviewed,
         }
+    in_scope = (lambda p: _centre_in(p, spans)) if reviewed is not None else None
+    ap = sweep_average_precision(precision_recall_sweep(t, p_all, rule, in_scope), len(t))
     fn = len(result["misses"])
     review = sum(1 for o in result["outcomes"] if o["prediction"].get("review"))
     out: dict[str, Any] = {
@@ -199,6 +311,7 @@ def label_metrics(
         "precision": tp / (tp + len(fp_events)) if tp + len(fp_events) else None,
         "recall": tp / (tp + fn) if tp + fn else None,
         "average_precision": ap,
+        "average_precision_method": AP_METHOD,
         "analyzed_hours": analyzed_hours,
         "false_alarms_per_hour": len(fp_events) / analyzed_hours if analyzed_hours > 0 else None,
         "review_events_per_hour": review / analyzed_hours if analyzed_hours > 0 else None,
